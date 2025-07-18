@@ -1,0 +1,383 @@
+kaitsevägi
+Luurekeskus
+kaitsejõud
+Staabi- ja sidepataljon
+kaitseväelane
+sõjaväepolitsei
+tegevväelane
+1. jalaväebrigaad
+sõjavägi
+2. jalaväebrigaad
+sõjaväelane
+merevägi
+Kaitseväe Akadeemia
+õhuvägi
+Balti Kaitsekolledž
+maavägi
+BALTDEFCOL
+Toetuse
+väejuhatus
+Kaitseväe Värbamiskeskus
+Erioperatsioonide väejuhatus
+kaitseringkond
+Kalevi jalaväepataljon
+Kõrgem Sõjakool
+Scoutspataljon
+Võru LahingukoolTagalapataljon
+kaitseväe õppus/nVahipataljon
+lahinglaskmine
+Viru jalaväepataljon
+Veiko-Vello Palm
+Suurtükiväepataljon
+Eero Rebo
+Õhutõrjepataljon
+Jüri Saska
+Pioneeripataljon
+Rauno Sirk
+Kuperjanovi jalaväepataljon
+Rivo Meimer
+Logistikapataljon
+Andres Hairk
+Mereväebaas
+Vahur Karus
+Miinilaevade divisjon
+Tarmo Metsa
+tuukrigrupp
+Toomas Susi
+Õhuseiredivisjon
+Margo Grosberg
+Ilmar Tamm
+Nursipalu harjutusväli
+Lennubaas
+Nursipalu
+Õhuväelane
+Klooga harjutusväli
+BALTRON
+Männiku harjutusväli
+BALTNET
+Sirgla harjutusväli
+Sõdurileht
+kaitseväe keskpolügoon
+Ajakiri Sõdur
+Tsiatsungõlmaa harjutuväli
+Kaitseväe orkester
+Kikepera harjutusväli
+Võidupüha paraad
+Otepää radar
+Vabariigi aastapäeva paraad
+Tõikamäe radar
+Põhjadiviis
+Kellavere radar
+MND-N
+Muhu radar
+Javelin
+Ämari
+CV-90
+mitmikraketiheitja
+HIMARS
+NASAMS
+diviis
+riigikaitse
+riigikaitse eelarve
+kaitsekulutused
+kaitse-eelarve
+kaitsekulu
+psühholoogiline kaitse
+kaitsetahe
+riigikaitseõpetus
+riigi/Eesti kaitsevõime
+riigikaitseõpetaja
+sõjaline valmisolek
+hübriidkonflikt
+sõjaline võime
+infosõda
+sõjaline kaitse
+psühholoogiline sõda
+sõjalise kaitse arengukava
+kaitseinvesteering
+riigikaitse arengukava
+kaitseinvesteeringud
+kaitsekulud
+mobilisatsioon
+kaitseinvesteeringud
+sundkoormis
+riigikaitseline
+kaitseväeteenistus
+tsiviiltoetuse
+kaitseväekohustus
+sundkoormis
+ühekordne riigikaitseülesanne
+sundkasutus
+riigikaitsjate toetaja
+ajateenistuskohustus
+Kaitseressursside Amet
+kutsealune
+Anu Rannaveski
+ajateenistus
+reservõppekogunemine
+ajateenija
+lisaõppekogunemine
+sõduri baaskursus
+õppekogunemine
+reservarmee
+reservõppus
+reservist
+SIIL
+reservväelane
+Okas
+arstlik komisjon
+Kevadtorm
+kaitseväeteenistuse veeb
+naised riigikaitses
+riigikaitse karjäärikeskus
+Naised Vormi
+riigikaitseõpetus
+naisajateenija
+riigikaitseõpetuse õpetaja
+klassiga teenistusse
+riigikaitselaager
+sõpradega teenistusse
+Merle Ulst
+Aare Jamnes
+Kaitseliit
+Noored Kotkad
+Kaitseliidu ülem
+noorkotkad
+Riho Ühtegi
+kodutütred
+Kaitseliidu malev
+Erna retk
+Kaitseliidu kool
+Pitka luurevõistlus
+naiskodukaitse
+Põrgupõhja retk
+Eero Rebo
+Utria dessant
+maakaitse
+naiskodukaitsja
+maakaitseringkond
+ole valmis
+küberkaitseüksus
+kriisiäpp
+tsiviilvastupanu
+kriisivalmidus
+elanikkonnakaitse
+Anname au
+kaitseliitlane
+kaitsepoliitika
+Balti kaitsekoostöö
+julgeolekupoliitika
+Euroopa Liidu kaitsekoostöö
+NATO
+Euroopa Liidu kaitsepoliitika
+artikkel 5
+Euroopa Liidu julgeolekupoliitika
+NRF
+Euroopa Kaitsefond
+kiirreageerimisüksus
+PESCO
+NFIU
+EL-i lahingugrupp
+NATO lahingugrupp
+Eurokorpus
+liitlaste lahingugrupp
+NATO innovatsioonikiirendi
+liitlasväed
+NATO kiirendiprogramm
+NATO pataljon
+DIANA
+NATO üksused
+diviisi staap
+```
+вооружённые силы  
+Центр разведки  
+силы обороны  
+Штабно-связной батальон  
+военнослужащий  
+военная полиция  
+профессиональный военнослужащий  
+1-я пехотная бригада  
+армия  
+2-я пехотная бригада  
+солдат  
+военно-морской флот  
+Академия Сил Обороны  
+военно-воздушные силы  
+Балтийский колледж обороны  
+сухопутные войска  
+BALTDEFCOL  
+Командование обеспечения  
+Центральное командование  
+Центр набора Сил Обороны  
+Командование спецопераций  
+военный округ  
+Пехотный батальон Калева  
+Высшая военная школа  
+Батальон Скаутов  
+Военная школа Выру  
+Тыловой батальон  
+военные учения  
+Караульный батальон  
+боевые стрельбы  
+Пехотный батальон Виру  
+Вейко-Велло Пальм  
+Артиллерийский батальон  
+Ээро Ребо  
+Зенитный батальон  
+Юри Саска  
+Инженерный батальон  
+Раунo Сирк  
+Пехотный батальон Куперьянова  
+Риво Меймер  
+Логистический батальон  
+Андрес Хайрк  
+Военно-морская база  
+Вахур Карус  
+Дивизион минных кораблей  
+Тармо Метса  
+группа водолазов  
+Томас Суси  
+Дивизион воздушного наблюдения  
+Марго Гросберг  
+Илмар Тамм  
+Учебный полигон Нурсипалу  
+Авиабаза  
+Нурсипалу  
+лётчик ВВС  
+Учебный полигон Клоога  
+BALTRON  
+Учебный полигон Мяннику  
+BALTNET  
+Учебный полигон Сиргла  
+Газета «Солдат»  
+Центральный полигон Сил Обороны  
+Журнал «Солдат»  
+Учебный полигон Тсиацунгылмаа  
+Оркестр Сил Обороны  
+Учебный полигон Кикепера  
+Парад в День Победы  
+Радар Отепя  
+Парад в День Республики  
+Радар Тыйкамяэ  
+Северная дивизия  
+Радар Келлавере  
+MND-N  
+Радар Муху  
+Джавелин  
+Эмари  
+CV-90  
+реактивная система залпового огня  
+HIMARS  
+NASAMS  
+дивизия  
+государственная оборона  
+бюджет на оборону  
+расходы на оборону  
+военный бюджет  
+расходы на оборону  
+психологическая защита  
+воля к обороне  
+обучение государственной обороне  
+оборонный потенциал государства/Эстонии  
+учитель по гос. обороне  
+военная готовность  
+гибридный конфликт  
+военный потенциал  
+информационная война  
+военная защита  
+психологическая война  
+план развития военной защиты  
+инвестиции в оборону  
+план развития гос. обороны  
+инвестиции в оборону  
+расходы на оборону  
+мобилизация  
+инвестиции в оборону  
+обязательная трудовая повинность  
+государственно-оборонный  
+военная служба  
+гражданская поддержка  
+обязанность прохождения военной службы  
+трудовая повинность  
+разовое задание по обороне  
+принудительное использование  
+поддержка защитников Родины  
+обязанность призыва  
+Департамент ресурсов обороны  
+призывник  
+Ану Раннавески  
+срочная служба  
+резервные учения  
+срочник  
+дополнительные сборы  
+базовый курс солдата  
+учебные сборы  
+резервная армия  
+резервные учения  
+резервист  
+«СИИЛ»  
+резервный военнослужащий  
+«Окас»  
+врачебная комиссия  
+«Весенний шторм»  
+веб-сайт военной службы  
+женщины в обороне  
+карьерный центр обороны  
+Женщины в форме  
+обучение по гос. обороне  
+женщина-срочник  
+учитель по гос. обороне  
+служба с классом  
+лагерь по гос. обороне  
+служба с друзьями  
+Мерле Улст  
+Ааре Ямнес  
+Союз обороны  
+Юные орлы  
+Командующий Союзом обороны  
+юные орлы  
+Рихо Ыхтеги  
+девушки-добровольцы  
+ополчение Союза обороны  
+Поход Эрны  
+Школа Союза обороны  
+Соревнование разведгрупп Питка  
+Женская организация обороны  
+Поход Пёргупыхья  
+Ээро Ребо  
+десант Утрия  
+территориальная оборона  
+женщина-доброволец  
+округ территориальной обороны  
+будь готов  
+подразделение киберобороны  
+кризисное приложение  
+гражданское сопротивление  
+готовность к кризисам  
+гражданская защита  
+Честь имеем  
+член Союза обороны  
+оборонная политика  
+Балтийское оборонное сотрудничество  
+политика безопасности  
+Оборонное сотрудничество ЕС  
+НАТО  
+оборонная политика ЕС  
+статья 5  
+политика безопасности ЕС  
+NRF  
+Европейский оборонный фонд  
+подразделение быстрого реагирования  
+PESCO  
+NFIU  
+боегруппа ЕС  
+боегруппа НАТО  
+Еврокорпус  
+боегруппа союзников  
+ускоритель инноваций НАТО  
+союзные войска  
+программа ускорения НАТО  
+батальон НАТО  
+DIANA  
+подразделения НАТО  
+штаб дивизии
