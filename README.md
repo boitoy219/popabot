@@ -35,10 +35,10 @@ or
 8. After installation is complete run 
 > `python pipeline.py`
 
-### What does this Popabot do?
+### How does Popabot work?
 
 | File Name  | Description                       |
 | :-------- | :-------------------------------- |
 | `tg_scraper.py` | File scrapes all groups under `~./groups/groups.txt` directory with keywords located in the `~./keywords/keywords.txt`. You can change the groups and keywords to focus on different scraping output. Creating a file under `~./data/runs/` directory with the latest scraping session date. |
-| `report_writer.py` | File creates a report in a .md format |
-| `pipeline.py` | File activates all of the previous files as well as creates the latest messages that have been posted since the last scraping run |
+| `report_writer.py` | File creates a report in a .md format under `~./analytics/output/` directory |
+| `pipeline.py` | File activates all of the previous files as well as creates the latest messages that have been posted since the last scraping run located in `~./data/` folder |
