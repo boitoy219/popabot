@@ -1,10 +1,9 @@
-
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
 from bertopic import BERTopic
 from tg_scraper import run_scraper
 from report_writer import write_markdown_report
-import os
 
 
 def load_new_data(new_path='data/new_messages.csv'):
@@ -21,12 +20,9 @@ def load_keywords(keywords_path='keywords/'):
     return keywords
 
 
-# Optional filtering by keywords (disabled for now)
+# Optional keyword filtering (currently unused)
 def filter_data(df, keywords):
-    # df = df.dropna(subset=['text'])
-    # df['text_lower'] = df['text'].str.lower()
-    # return df[df['text_lower'].apply(lambda text: any(k in text for k in keywords))]
-    return df
+    return df  # No-op for now
 
 
 def plot_keyword_mentions(df, save_path='analytics/output/keyword_mentions.png'):
@@ -48,7 +44,7 @@ def plot_keyword_mentions(df, save_path='analytics/output/keyword_mentions.png')
 
 
 def run_topic_modeling(df, save_path='analytics/output/topic_summary.csv'):
-    model = BERTopic(embedding_model="paraphrase-MiniLM-L6-v2")
+    model = BERTopic(embedding_model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     topics, _ = model.fit_transform(df['text'].astype(str))
     df['topic'] = topics
     summary_df = model.get_topic_info()
@@ -70,7 +66,7 @@ def main():
 
     if df_filtered.empty:
         print("No matching messages after filtering (disabled for now). Proceeding with full data.")
-        df_filtered = df  # fallback to all new messages
+        df_filtered = df
 
     plot_keyword_mentions(df_filtered)
     topic_model = run_topic_modeling(df_filtered)
@@ -79,4 +75,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"❌ Pipeline failed: {e}")
+        raise

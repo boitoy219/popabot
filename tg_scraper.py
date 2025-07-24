@@ -8,7 +8,7 @@ import pandas as pd
 
 def run_scraper(env_path=".env", group_dir="groups/", keyword_dir="keywords/", run_dir="data/runs/"):
     load_dotenv(env_path)
-    api_id = int(os.getenv("API_ID"))
+    api_id = int(os.getenv('API_ID'))
     api_hash = os.getenv("API_HASH")
     session_name = os.getenv("SESSION_NAME", "session")
 
