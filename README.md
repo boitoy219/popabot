@@ -12,8 +12,8 @@ or
 or 
 * `Visual Studio`
 
-**Python 3.13**
-1. Go to Microsoft Store and download [Python 3.13](https://apps.microsoft.com/detail/9PNRBTZXMB4Z?hl=en-us&gl=EE&ocid=pdpshare)
+**Python 3.10**
+1. Go to Microsoft Store and download [Python 3.10](https://apps.microsoft.com/detail/9PJPW5LDXLZ5?hl=en-us&gl=EE&ocid=pdpshare)
 
 **C++ Build Tools**
 1. Open this [Link](https://visualstudio.microsoft.com/visual-cpp-build-tools/). 
