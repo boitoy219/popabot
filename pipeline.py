@@ -44,6 +44,10 @@ def plot_keyword_mentions(df, save_path='analytics/output/keyword_mentions.png')
 
 
 def run_topic_modeling(df, save_path='analytics/output/topic_summary.csv'):
+    if len(df) < 15:
+        print(f"⚠️ Too few messages ({len(df)}) for topic modeling. Skipping...")
+        return None
+
     model = BERTopic(embedding_model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     topics, _ = model.fit_transform(df['text'].astype(str))
     df['topic'] = topics
@@ -54,7 +58,7 @@ def run_topic_modeling(df, save_path='analytics/output/topic_summary.csv'):
 
 
 def main():
-    run_scraper()
+    # run_scraper()
     df = load_new_data()
 
     if df.empty:
@@ -70,7 +74,9 @@ def main():
 
     plot_keyword_mentions(df_filtered)
     topic_model = run_topic_modeling(df_filtered)
-    write_markdown_report(df_filtered, topic_model)
+
+    if topic_model is not None:
+        write_markdown_report(df_filtered, topic_model)
     print("✅ Pipeline complete. Outputs saved to 'analytics/output/'.")
 
 

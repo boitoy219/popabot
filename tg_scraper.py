@@ -43,7 +43,7 @@ def run_scraper(env_path=".env", group_dir="groups/", keyword_dir="keywords/", r
                 group_name = entity.username or entity.title or str(entity.id)
                 print(f"🔍 Reading messages from: {group_name}")
 
-                for message in client.iter_messages(entity, limit=500):
+                for message in client.iter_messages(entity, limit=800):
                     if message.text and match_keywords(message.text):
                         message_id = f"{group_name}_{message.id}"
                         url = f"https://t.me/{entity.username}/{message.id}" if getattr(entity, 'username', None) else "(private group - no URL)"

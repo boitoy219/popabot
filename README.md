@@ -1,7 +1,10 @@
-# Some Funny haha Data Scraper
-This Project aims to create an automated propahahanda recording and reviewing system based on inserted keywords and groups.
+# PopaBot Data Scraper
+This Project aims to create an automated propaganda recording and reviewing system based on inserted [keywords](https://github.com/boitoy219/popabot/tree/main/groups) and [groups](https://github.com/boitoy219/popabot/tree/main/keywords). Creating a **Report file** [here](https://github.com/boitoy219/popabot/blob/main/analytics/output/summary.md)
 
 ## How to run the Project:
+The project runs by itself every day at 0800 GMT+3 (0500UTC), creating a report file under called `summary.md` [~./analytics/output](https://github.com/boitoy219/popabot/blob/main/analytics/output)
+
+## How to run the Project locally:
 In order to run the project locally you need to download some packages before you can run it.
 
 ### Pre-requisites: 
