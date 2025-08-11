@@ -113,7 +113,11 @@ def write_markdown_report(df, topic_model=None, output_path='analytics/output/su
     report_lines.append("- Themes suggest coordination and information warfare narratives.")
 
     # Write to disk
-    with open(output_path, 'w', encoding='utf-8') as f:
+    #with open(output_path, 'w', encoding='utf-8') as f:
+    #    f.write('\n'.join(report_lines))
+
+    with open(output_path, 'w', encoding='utf-8', errors='ignore') as f:
         f.write('\n'.join(report_lines))
 
-    print(f"\ud83d\udcdc Markdown report saved to: {output_path}")
+
+    #print(f"\ud83d\udcdc Markdown report saved to: {output_path}")

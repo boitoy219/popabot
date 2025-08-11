@@ -57,8 +57,32 @@ def run_topic_modeling(df, save_path='analytics/output/topic_summary.csv'):
     return model
 
 
+#def main():
+#    run_scraper()
+#    df = load_new_data()
+#
+#    if df.empty:
+#        print("No new messages to analyze.")
+#        return
+#
+#    keywords = load_keywords()
+#    df_filtered = filter_data(df, keywords)
+#
+#    if df_filtered.empty:
+#        print("No matching messages after filtering (disabled for now). Proceeding with full data.")
+#        df_filtered = df
+#
+#    plot_keyword_mentions(df_filtered)
+#    topic_model = run_topic_modeling(df_filtered)
+#
+#    if topic_model is not None:
+#        write_markdown_report(df_filtered, topic_model)
+#    print("✅ Pipeline complete. Outputs saved to 'analytics/output/'.")
+
 def main():
-    # run_scraper()
+    # Если хочешь — раскомментируй, чтобы сразу запускался сбор новых данных
+    run_scraper()
+
     df = load_new_data()
 
     if df.empty:
@@ -75,9 +99,16 @@ def main():
     plot_keyword_mentions(df_filtered)
     topic_model = run_topic_modeling(df_filtered)
 
-    if topic_model is not None:
-        write_markdown_report(df_filtered, topic_model)
+    # 🔧 Переименование колонок для совместимости с report_writer.py
+    df_filtered = df_filtered.rename(columns={
+        'group': 'group_name',
+        'url': 'link'
+    })
+
+    write_markdown_report(df_filtered, topic_model)
+
     print("✅ Pipeline complete. Outputs saved to 'analytics/output/'.")
+
 
 
 if __name__ == '__main__':
