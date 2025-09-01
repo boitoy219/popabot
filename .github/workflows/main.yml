@@ -9,11 +9,6 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
 
-    env:
-      API_ID: ${{ secrets.API_ID }}
-      API_HASH: ${{ secrets.API_HASH }}
-      SESSION_NAME: ${{ secrets.SESSION_NAME }}
-
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v3
@@ -36,6 +31,10 @@ jobs:
           python -m nltk.downloader punkt
 
       - name: 🚀 Run Telegram Narrative Pipeline
+        env: # ✅ pass GitHub secrets here
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_NAME: ${{ secrets.SESSION_NAME }}
         run: python pipeline.py
 
       - name: 📤 Upload Report Artifacts
