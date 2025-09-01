@@ -1,0 +1,67 @@
+name: Build Telegram Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * *'  # ⏰ Runs daily at 05:00 UTC
+    
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.10"
+      POPABOT_LLM: "llama3.1:8b-instruct-q4_K_M"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # Cache Ollama models between runs (saves re-downloading ~GBs)
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-${{ runner.os }}-${{ env.POPABOT_LLM }}
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama --version
+
+      - name: Start Ollama
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          # Simple readiness check
+          for i in {1..30}; do
+            curl -s http://127.0.0.1:11434/api/tags && break
+            sleep 1
+          done
+
+      - name: Pull model (uses cache if present)
+        run: |
+          ollama pull "${POPABOT_LLM}"
+          ollama list
+
+      - name: Run pipeline
+        env:
+          POPABOT_LLM: ${{ env.POPABOT_LLM }}
+        run: python pipeline.py
+
+      - name: Upload analytics
+        uses: actions/upload-artifact@v4
+        with:
+          name: analytics-output
+          path: analytics/output/
