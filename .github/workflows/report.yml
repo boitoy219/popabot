@@ -1,28 +1,31 @@
-name: Build Telegram Report
+name: Build Telegram Report (LLM-only)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 5 * * *'  # daily at 05:00 UTC
+    - cron: "0 5 * * *"  # daily at 05:00 UTC
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    # Use your GitHub "Environment" named 'env' so its secrets are available
     environment: env
     timeout-minutes: 45
 
-    # Defaults; secrets can override via the Export step below
     env:
       PYTHON_VERSION: "3.10"
-      # Use the refactored default (you can override via secrets)
-      POPABOT_LLM: "qwen2.5:7b-instruct-q4_K_M"
+
+      # LLM / Ollama (defaults; can be overridden by environment secrets below)
       OLLAMA_HOST: "http://127.0.0.1:11434"
-      POPABOT_USE_SCRAPER: "0"           # scraper off in CI
-      POPABOT_USE_LLM: "1"
+      POPABOT_LLM: "qwen2.5:7b-instruct-q4_K_M"
+      POPABOT_LLM_TEMP: "0.2"
       POPABOT_LLM_MAX_TOKENS: "1536"
       POPABOT_LLM_CTX: "8192"
       POPABOT_SNIPPET_CHAR_BUDGET: "8000"
+      POPABOT_USE_LLM: "1"
+
+      # Pipeline + outputs
+      POPABOT_USE_SCRAPER: "0"                       # CI: keep off unless on self-hosted runner
+      POPABOT_SAMPLE_N: "0"
       POPABOT_OUT_MD: "analytics/output/summary.md"
       POPABOT_TREND_PNG: "analytics/output/keyword_mentions.png"
 
@@ -47,26 +50,29 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
 
-      # Optional: export secrets into env for code that reads os.environ or .env
-      # (tg_scraper.py loads .env, but we keep POPABOT_USE_SCRAPER=0 here)
-      - name: Export environment secrets
+      # Optionally surface environment secrets to the process
+      - name: Export environment secrets to env
         shell: bash
         run: |
-          # Only export if the secret exists (keeps logs clean and avoids empty values)
           export_to_env () { [ -n "$1" ] && echo "$2=$1" >> "$GITHUB_ENV"; }
+          # Scraper creds (only used if POPABOT_USE_SCRAPER=1)
           export_to_env "${{ secrets.API_ID }}"                  "API_ID"
           export_to_env "${{ secrets.API_HASH }}"                "API_HASH"
           export_to_env "${{ secrets.SESSION_NAME }}"            "SESSION_NAME"
+          # LLM settings (override defaults if provided in Environment secrets)
+          export_to_env "${{ secrets.OLLAMA_HOST }}"             "OLLAMA_HOST"
           export_to_env "${{ secrets.POPABOT_LLM }}"             "POPABOT_LLM"
-          export_to_env "${{ secrets.POPABOT_LLM_CTX }}"         "POPABOT_LLM_CTX"
+          export_to_env "${{ secrets.POPABOT_LLM_TEMP }}"        "POPABOT_LLM_TEMP"
           export_to_env "${{ secrets.POPABOT_LLM_MAX_TOKENS }}"  "POPABOT_LLM_MAX_TOKENS"
+          export_to_env "${{ secrets.POPABOT_LLM_CTX }}"         "POPABOT_LLM_CTX"
           export_to_env "${{ secrets.POPABOT_SNIPPET_CHAR_BUDGET }}" "POPABOT_SNIPPET_CHAR_BUDGET"
-          export_to_env "${{ secrets.POPABOT_USE_LLM }}"         "POPABOT_USE_LLM"
+          # Pipeline toggles / outputs (optional overrides)
           export_to_env "${{ secrets.POPABOT_USE_SCRAPER }}"     "POPABOT_USE_SCRAPER"
+          export_to_env "${{ secrets.POPABOT_SAMPLE_N }}"        "POPABOT_SAMPLE_N"
           export_to_env "${{ secrets.POPABOT_OUT_MD }}"          "POPABOT_OUT_MD"
           export_to_env "${{ secrets.POPABOT_TREND_PNG }}"       "POPABOT_TREND_PNG"
+          export_to_env "${{ secrets.POPABOT_USE_LLM }}"         "POPABOT_USE_LLM"
 
-      # Cache Ollama models between runs (saves GBs)
       - name: Cache Ollama models
         uses: actions/cache@v4
         with:
@@ -110,15 +116,17 @@ import pandas as pd; print(len(pd.read_csv('data/new_messages.csv')))
 PY
 )"
 
-      - name: Run pipeline (LLM-first, CPU fallback inside pipeline)
+      - name: Run pipeline (LLM-only)
         env:
           OLLAMA_HOST: ${{ env.OLLAMA_HOST }}
           POPABOT_LLM: ${{ env.POPABOT_LLM }}
-          POPABOT_USE_LLM: ${{ env.POPABOT_USE_LLM }}
+          POPABOT_LLM_TEMP: ${{ env.POPABOT_LLM_TEMP }}
           POPABOT_LLM_MAX_TOKENS: ${{ env.POPABOT_LLM_MAX_TOKENS }}
           POPABOT_LLM_CTX: ${{ env.POPABOT_LLM_CTX }}
           POPABOT_SNIPPET_CHAR_BUDGET: ${{ env.POPABOT_SNIPPET_CHAR_BUDGET }}
+          POPABOT_USE_LLM: ${{ env.POPABOT_USE_LLM }}
           POPABOT_USE_SCRAPER: ${{ env.POPABOT_USE_SCRAPER }}
+          POPABOT_SAMPLE_N: ${{ env.POPABOT_SAMPLE_N }}
           POPABOT_OUT_MD: ${{ env.POPABOT_OUT_MD }}
           POPABOT_TREND_PNG: ${{ env.POPABOT_TREND_PNG }}
         run: python pipeline.py
