@@ -108,10 +108,7 @@ jobs:
               exit 1
             fi
           fi
-          echo "Input rows: $(python - <<'PY'
-import pandas as pd; print(len(pd.read_csv('data/new_messages.csv')))
-PY
-)"
+          echo "Input rows: $(python - <<'PY' import pandas as pd; print(len(pd.read_csv('data/new_messages.csv'))) PY)"
 
       - name: Run pipeline (LLM-only)
         env:
