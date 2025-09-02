@@ -1,478 +1,678 @@
-# -*- coding: utf-8 -*-
-"""
-llm_report_writer.py — LLM-first report writer (CPU-friendly, GH Actions-safe)
-
-- Prefers local Ollama LLM via llm_writer.py to generate analytic sections.
-- Graceful fallback to heuristic summaries if the LLM isn’t available.
-- No wordcloud (removed by design).
-- Includes keyword trend plot if pipeline created it.
-
-Backwards compatible with old pipeline signature:
-  write_markdown_report(df, topic_model, keywords)
-and with the refactored one:
-  write_markdown_report(df, user_keywords=keywords)
-"""
+# llm_report_writer.py — Markdown-only LLM writer (no JSON)
+# - Clustering of reposts
+# - URL & text dedupe
+# - Prompt budgeter
+# - Incomplete-output detection + brief retry
+# - Topics derived deterministically (n-grams from TF-IDF)
+# - Writes both OUT_MD and YYYY-MM-DD_summary.md
+# - Default model switched to qwen2.5:7b-instruct-q4_K_M (tighter Markdown discipline)
 
 from __future__ import annotations
-
 import os
 import re
-import sys
-from datetime import datetime
+import json
+import math
+import time
 from collections import Counter, defaultdict
-from typing import List, Tuple, Dict, Any
+from typing import List, Dict, Any, Tuple
+import datetime as _dt
 
-import pandas as pd
-import numpy as np
-
-# Light NLP
-import nltk
-from nltk.tokenize import sent_tokenize
-
-# Heuristic summarization fallback
 try:
-    from sumy.summarizers.text_rank import TextRankSummarizer
-    from sumy.parsers.plaintext import PlaintextParser
-    from sumy.nlp.tokenizers import Tokenizer
-    SUMY_OK = True
+    import requests
 except Exception:
-    SUMY_OK = False
+    requests = None
 
-# TF-IDF
-from sklearn.feature_extraction.text import TfidfVectorizer
-
-# Optional near-duplicate merge
-try:
-    from rapidfuzz import fuzz
-    RAPIDFUZZ_OK = True
-except Exception:
-    RAPIDFUZZ_OK = False
-
-# LLM helper
-try:
-    from llm_writer import try_llm_analytic_report, enrich_stats_for_llm
-except Exception:
-    # If llm_writer isn’t present, we’ll just skip LLM use
-    try_llm_analytic_report = None
-    enrich_stats_for_llm = None
-
-# ---------- Version & NLTK ----------
-if sys.version_info >= (3, 13):
-    raise RuntimeError("Python 3.13+ not supported here. Use Python 3.10 or 3.11.")
-nltk.download("punkt", quiet=True)
-
-# ---------- Stopwords ----------
-RU_SW = {
-    "и","в","во","не","что","он","на","я","с","со","как","а","то","все","она","так","его","но","да",
-    "ты","к","у","же","вы","за","бы","по","ее","мне","было","вот","от","меня","еще","нет","о","из",
-    "ему","теперь","когда","даже","ну","вдруг","ли","если","уже","или","ни","быть","был","него",
-    "до","вас","нибудь","опять","уж","вам","ведь","там","потом","себя","ничего","ей","может","они",
-    "тут","где","есть","надо","ней","для","мы","тебя","их","чем","была","сам","чтоб","без","будто",
-    "чего","раз","тоже","себе","под","будет","ж","тогда","кто","этот","того","потому","этого","какой",
-    "совсем","ним","здесь","этом","один","почти","мой","тем","чтобы","нее","кажется","сейчас","были",
-    "куда","зачем","всех","никогда","можно","при","наконец","два","об","другой","хоть","после",
-    "над","больше","тот","через","эти","нас","про","всего","них","какая","много","разве","три","эту",
-    "моя","впрочем","хорошо","свою","этой","перед","иногда","лучше","чуть","том","нельзя","такой",
-    "им","более","всегда","конечно","всю","между","лишь"
-}
-EN_SW = {
-    "the","a","an","and","or","but","if","to","of","for","in","on","at","by","from","with","as","is","are",
-    "was","were","be","been","being","it","its","this","that","these","those","there","their","we","you",
-    "he","she","they","i","me","my","our","your","his","her","their","them","us","not","no","yes","do","does",
-    "did","so","than","then","also","such","into","over","under","out","up","down","about","more","most","any",
-    "all","some","many","few"
-}
-GEN_SW = {
-    "—","–","-","•","…","—","–","—","️","►","▪","🔴","⚡️","⭐️","🟢","🔸","🔹","#","@","http","https","t.me",
-    "telegram","📣","📌","📍","📱","👉","🌟","💬","✉️","📩","📨","📧","💌","📥","🎼","🌐","__","**"
-}
-STOPWORDS = RU_SW | EN_SW | GEN_SW
-
-# ---------- Cleaning ----------
-URL_RE = re.compile(r"https?://\S+")
-MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-WS_RE = re.compile(r"\s+")
-EMOJI_RE = re.compile(
-    "[" "\U0001F300-\U0001F6FF" "\U0001F1E0-\U0001F1FF" "\U00002700-\U000027BF"
-    "\U0001F900-\U0001F9FF" "\U00002600-\U000026FF" "]+", flags=re.UNICODE
+RE_URL = re.compile(r"https?://[^\s>]+", re.I)
+RE_WS = re.compile(r"\s+")
+STOPWORDS = set(
+    '''a an and are as at be by for from has have i in is it its of on or our that the their them they this to was were will with you your we he she not if but than then so such'''.split()
 )
 
-def clean_text(s: str) -> str:
-    if not isinstance(s, str):
-        s = str(s)
-    s = s.replace("\u200b", " ")
-    s = MD_LINK_RE.sub(r"\1", s)
-    s = URL_RE.sub(" ", s)
-    s = EMOJI_RE.sub(" ", s)
-    s = WS_RE.sub(" ", s).strip()
-    return s.encode("utf-8", "ignore").decode("utf-8")
+# ---------------------
+# Public entry point
+# ---------------------
 
-def normalize_for_hash(s: str) -> str:
-    s = clean_text(s).lower()
-    s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
-    s = WS_RE.sub(" ", s).strip()
-    return s
+def write_markdown_report(df, out_path, user_keywords=None, **kwargs):
+    """LLM-first writer that expects Markdown output directly (no JSON).
+    - Builds deterministic topics & evidence (clustered, deduped, budgeted)
+    - Calls Ollama once (with retry-on-incomplete)
+    - Appends deterministic appendices
+    - Writes to out_path and YYYY-MM-DD_summary.md
+    - Raises RuntimeError on LLM failure to allow CPU fallback
+    """
+    if df is None:
+        raise RuntimeError("llm_report_writer: dataframe is None")
 
-def sent_split(text: str) -> list:
-    try:
-        return sent_tokenize(text, language="russian")
-    except Exception:
-        try:
-            return sent_tokenize(text, language="english")
-        except Exception:
-            return re.split(r"(?<=[.!?])\s+", text)
+    use_llm = os.getenv("POPABOT_USE_LLM", "1") == "1"
+    if not use_llm:
+        raise RuntimeError("POPABOT_USE_LLM=0 -> skip LLM writer")
+    if requests is None:
+        raise RuntimeError("requests not available for Ollama call")
 
-# ---------- Summarization Fallback ----------
-def textrank_summary(text: str, n_sentences: int = 7, lang: str = "russian") -> str:
-    text = clean_text(text)
-    if not text:
-        return ""
-    if SUMY_OK:
-        try:
-            parser = PlaintextParser.from_string(text, Tokenizer(lang))
-        except Exception:
-            parser = PlaintextParser.from_string(text, Tokenizer("english"))
-        summarizer = TextRankSummarizer()
-        max_sents = max(1, min(n_sentences, len(parser.document.sentences)))
-        summary = summarizer(parser.document, max_sents)
-        return " ".join(str(s) for s in summary).strip()
-    # very light fallback: take first N high-information sentences
-    sents = sent_split(text)[:max(1, n_sentences)]
-    return " ".join(sents).strip()
+    # Env
+    host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip('/')
+    # Default model switched per user guidance
+    model = os.getenv("POPABOT_LLM", "qwen2.5:7b-instruct-q4_K_M")
+    temp = float(os.getenv("POPABOT_LLM_TEMP", "0.2"))
+    max_tokens = int(os.getenv("POPABOT_LLM_MAX_TOKENS", "1536"))
+    num_ctx = int(os.getenv("POPABOT_LLM_CTX", "8192"))
+    trend_png = kwargs.get("trend_png_path")
+    if not trend_png:
+        trend_png = os.path.join(os.path.dirname(out_path) or ".", "keyword_mentions.png")
 
-# ---------- TF-IDF ----------
-def extract_tfidf_terms(texts, top_n=14, ngram_range=(1,2), min_df=2, max_features=6000):
-    vec = TfidfVectorizer(
-        analyzer="word",
-        token_pattern=r"(?u)\b\w[\w\-]+\b",
-        lowercase=True,
-        stop_words=None,
-        ngram_range=ngram_range,
-        min_df=min_df,
-        max_features=max_features,
+    # Deterministic signals & inputs
+    det = _build_deterministic(df, user_keywords=user_keywords)
+    topics = _derive_topics(det, top_k=8)
+
+    # Evidence selection (cluster reposts, prefer URLs, dedupe, budget)
+    evidence = _cluster_and_select_evidence(df, max_items=12)
+    evidence = _budget_snippets(evidence, max_chars=int(os.getenv("POPABOT_SNIPPET_CHAR_BUDGET", "8000")))
+    if not evidence:
+        # As a last resort, pick from raw rows
+        evidence = _select_representative_snippets(df, max_snippets=8, min_snippets=4)
+
+    # Compose a strict Markdown prompt (no JSON)
+    md = _call_ollama_markdown(
+        host=host,
+        model=model,
+        temp=temp,
+        max_tokens=max_tokens,
+        num_ctx=num_ctx,
+        evidence=evidence,
+        topics=topics,
+        det=det,
+        user_keywords=user_keywords,
+        force_brief=False,
+        num_predict_boost=1.0,
     )
-    X = vec.fit_transform(texts)
-    terms = vec.get_feature_names_out()
-    scores = np.asarray(X.sum(axis=0)).ravel()
-    items = list(zip(terms, scores))
-    def keep(term):
-        parts = term.split()
-        if any((p in STOPWORDS) or (len(p) <= 2) for p in parts):
-            return False
-        return True
-    items = [(t, s) for (t, s) in items if keep(t)]
-    items.sort(key=lambda x: x[1], reverse=True)
-    return items[:top_n]
 
-# ---------- Duplicates ----------
-def identify_duplicates(df, use_fuzzy=True, fuzzy_threshold=94):
-    buckets: Dict[str, list] = defaultdict(list)
-    for _, row in df.iterrows():
-        buckets[normalize_for_hash(row["text"])].append(row)
-
-    clusters = []
-    for _, rows in buckets.items():
-        texts = [clean_text(r["text"]) for r in rows]
-        canonical = max(texts, key=len)
-        srcs = [f'{r["group"]} [{r["url"]}]' for r in rows]
-        clusters.append({"text": canonical, "sources": list(dict.fromkeys(srcs))})
-
-    if use_fuzzy and RAPIDFUZZ_OK and len(clusters) > 1:
-        merged = []
-        used = set()
-        for i in range(len(clusters)):
-            if i in used:
-                continue
-            base = clusters[i]
-            for j in range(i+1, len(clusters)):
-                if j in used:
-                    continue
-                score = fuzz.token_set_ratio(base["text"], clusters[j]["text"])
-                if score >= fuzzy_threshold:
-                    base["sources"].extend(clusters[j]["sources"])
-                    base["sources"] = list(dict.fromkeys(base["sources"]))
-                    if len(clusters[j]["text"]) > len(base["text"]):
-                        base["text"] = clusters[j]["text"]
-                    used.add(j)
-            merged.append(base)
-        clusters = merged
-    return clusters
-
-# ---------- Keywords ----------
-def count_keywords(df, keywords):
-    out = {}
-    texts = df["text"].astype(str).str.lower()
-    for kw in keywords:
-        pattern = rf"\b{re.escape(str(kw).lower())}\b"
-        out[kw] = int(texts.str.count(pattern).sum())
-    return dict(sorted(out.items(), key=lambda x: x[1], reverse=True))
-
-def auto_top_keywords(df, top_n=35):
-    counts = Counter()
-    for s in df["text"].astype(str):
-        s = clean_text(s).lower()
-        tokens = re.findall(r"(?u)\b\w[\w\-]+\b", s)
-        for t in tokens:
-            if (t in STOPWORDS) or (len(t) <= 2):
-                continue
-            counts[t] += 1
-    return counts.most_common(top_n)
-
-# ---------- Propaganda ----------
-PROP_CUES = [
-    "nato","provocation","biolab","nazis","aggressor","strike","escalation","false flag",
-    "disinformation","psychological","mobilization","hybrid",
-    "нато","провокац","биолаб","наци","агресс","удар","эскалац","ложн","дезинформ","психолог",
-    "мобилизац","гибридн"
-]
-def detect_propaganda_patterns(df):
-    def hit(text):
-        t = text.lower()
-        return any(cue in t for cue in PROP_CUES)
-    mask = df["text"].astype(str).apply(hit)
-    matches = df[mask].copy()
-    return int(matches.shape[0]), matches[["text","url","group"]]
-
-# ---------- Actors ----------
-DEFAULT_ACTORS = [
-    "путин","лукашенко","нато","зеленский","европа","польша","литва","латвия","эстония",
-    "сша","одкб","шос","ес","украина","киев","москва","минск","калининград","гродно","брест",
-    "ревенко","хренин","муравейко","сердюков","кадыров","мид","минобороны"
-]
-def summarize_actors(df, actors=DEFAULT_ACTORS):
-    texts = df["text"].astype(str).str.lower()
-    res = []
-    for a in actors:
-        res.append((a, int(texts.str.count(rf"\b{re.escape(a)}\b").sum())))
-    res.sort(key=lambda x: x[1], reverse=True)
-    return res
-
-# ---------- Observables ----------
-OBSERVABLES = [
-    ("перемещ",  "Troop movement"),
-    ("мобилизац","Mobilization references"),
-    ("гродно",   "Grodno deployments"),
-    ("брест",    "Brest deployments"),
-    ("сувалк",   "Suwalki corridor"),
-    ("учени",    "Military exercises"),
-    ("удар",     "Strike implication"),
-    ("ядер",     "Nuclear context"),
-    ("орешник",  "Oreshnik system"),
-    ("quadriga", "Quadriga-2025 (NATO)"),
-    ("żelazny",  "Żelazny Obrońca (PL)"),
-    ("namejs",   "Namejs-2025 (LV)"),
-    ("iron",     "Iron Spear / Shield (LT)"),
-]
-def tally_observables(df):
-    obs_lines = []
-    texts = df["text"].astype(str).str.lower()
-    for k, note in OBSERVABLES:
-        count = int(texts.str.count(k).sum())
-        if count > 0:
-            obs_lines.append((note, k, count))
-    return obs_lines
-
-# ---------- Core Writer ----------
-def write_markdown_report(df: pd.DataFrame, *args, out_path: str = "analytics/output/summary.md",
-                          user_keywords: Any = None, **kwargs):
-    """
-    Compatible with both:
-      write_markdown_report(df, topic_model, keywords)
-      write_markdown_report(df, user_keywords=keywords)
-
-    We ignore 'topic_model' (no BERTopic here).
-    """
-    # Back-compat: infer user_keywords from positional args if needed
-    if user_keywords is None:
-        # Old: (df, topic_model, keywords)
-        if len(args) >= 2 and isinstance(args[1], (list, set, tuple, dict)):
-            user_keywords = args[1]
-        # Sometimes pipeline may pass only keywords as 1st arg
-        elif len(args) == 1 and isinstance(args[0], (list, set, tuple, dict)):
-            user_keywords = args[0]
-        else:
-            user_keywords = []
-    # Normalize KW container
-    if isinstance(user_keywords, dict):
-        # Already a dict of counts? keep keys as the set we’ll count anyway
-        user_keywords = list(user_keywords.keys())
-    elif isinstance(user_keywords, (set, tuple)):
-        user_keywords = list(user_keywords)
-    elif not isinstance(user_keywords, list):
-        user_keywords = []
-
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-    # Validate & clean df
-    for col in ("text","url","group","date"):
-        if col not in df.columns:
-            raise ValueError(f"Input DataFrame missing required column: {col}")
-
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True)
-    df["text"] = df["text"].astype(str).apply(clean_text)
-    df["group"] = df["group"].astype(str)
-    df["url"] = df["url"].astype(str)
-
-    # Basic stats
-    message_count = len(df)
-    date_min = df["date"].min()
-    date_max = df["date"].max()
-    start_date = date_min.strftime("%B %d, %Y") if pd.notna(date_min) else "N/A"
-    end_date = date_max.strftime("%B %d, %Y") if pd.notna(date_max) else "N/A"
-    date_str = datetime.now().strftime("%Y-%m-%d")
-
-    # Deduplicate clusters
-    deduped_msgs = identify_duplicates(df, use_fuzzy=True, fuzzy_threshold=94)
-    dedup_text = "\n".join(m["text"] for m in deduped_msgs)
-
-    # Heuristic artifacts
-    tfidf_terms = extract_tfidf_terms(df["text"].tolist(), top_n=14)
-    propaganda_count, propaganda_examples = detect_propaganda_patterns(df)
-    actor_summary = summarize_actors(df)
-    observables = tally_observables(df)
-    auto_keywords = auto_top_keywords(df, top_n=35)
-    keyword_counts = count_keywords(df, user_keywords) if user_keywords else {}
-
-    # Try LLM analytics
-    llm_sections = {}
-    if try_llm_analytic_report and enrich_stats_for_llm:
-        stats_for_llm = enrich_stats_for_llm(
-            df,
-            tfidf_terms=tfidf_terms,
-            auto_keywords=auto_keywords,
-            user_keywords=keyword_counts,
-            observables=observables,
-            actor_summary=actor_summary,
-            propaganda_examples=propaganda_examples,
-            deduped_msgs=deduped_msgs,
+    # If incomplete, retry with briefer instructions and more tokens
+    if _looks_incomplete(md):
+        md = _call_ollama_markdown(
+            host=host,
+            model=model,
+            temp=temp,
+            max_tokens=int(max_tokens * 1.5),
+            num_ctx=num_ctx,
+            evidence=evidence,
+            topics=topics,
+            det=det,
+            user_keywords=user_keywords,
+            force_brief=True,
+            num_predict_boost=1.5,
         )
-        llm_sections = try_llm_analytic_report(
-            df,
-            stats=stats_for_llm,
-            temperature=0.2,
-            max_context_chars=12000,
-            lang_hint="auto",
-        ) or {}
 
-    # Fallback executive summary if LLM missing
-    if not llm_sections.get("exec_summary"):
-        llm_sections["exec_summary"] = textrank_summary(dedup_text[:120000], n_sentences=8, lang="russian")
+    if not isinstance(md, str) or not md.strip():
+        raise RuntimeError("LLM returned empty content")
 
-    # ---- Build Markdown ----
-    lines: List[str] = []
-    lines.append(f"# CIA-Style Intelligence Report — {date_str}\n")
-    lines.append(f"**Source Dataset:** {message_count} Telegram messages\n")
-    lines.append(f"**Date Range:** {start_date} — {end_date}\n")
+    # Compose final document: LLM sections + deterministic appendices + footer
+    out_md = []
+    now_str = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    out_md.append(f"# POPABOT Analytical Report\n\n_Generated {now_str}_\n")
 
-    # Executive / LLM analytics
-    lines.append("\n## 🧭 Executive Summary\n")
-    lines.append((llm_sections.get("exec_summary") or "_No summary available._") + "\n")
+    # NEW: show model attribution
+    out_md.append(f"_LLM model: {model}_\n")
 
-    def maybe_section(title_md: str, key: str):
-        val = llm_sections.get(key, "").strip()
-        if val:
-            lines.append(title_md + "\n")
-            lines.append(val + "\n")
+    # If the LLM forgot Evidence, add a compact auto-evidence block
+    if ("Evidence" not in md) and ("Citations" not in md):
+        out_md.append("\n## 🔗 Evidence & Citations (auto)\n")
+        for ev in evidence[:10]:
+            quote = ev.get("text", "").replace('\n', ' ').strip()
+            url = ev.get("url", "").strip()
+            if not quote and not url:
+                continue
+            tail = f" ([source]({url}))" if url else ""
+            out_md.append(f"> “{quote[:240]}{'…' if len(quote)>240 else ''}”{tail}")
+        out_md.append("")
 
-    maybe_section("## 🧵 Narrative Assessment", "narrative_assessment")
-    maybe_section("## 🧠 Propaganda / Influence Ops Assessment", "propaganda_assessment")
-    maybe_section("## ⚠️ Risk Outlook (7–21 days)", "risk_outlook")
-    maybe_section("## 🎯 Likely Adversary Objectives", "adversary_objectives")
-    maybe_section("## 🕳️ Collection Gaps & Next Tasks", "collection_gaps")
-    maybe_section("## 📝 Method Notes", "method_notes")
+    # Deterministic appendices
+    out_md.append("---\n\n# Appendices — Deterministic Metrics\n")
 
-    # Dominant terms
-    lines.append("## 🔹 Dominant Terms (TF-IDF)\n")
-    lines.append("| Term | Weight |\n|---|---|")
-    for term, score in tfidf_terms:
-        lines.append(f"| {term} | {round(float(score), 2)} |")
+    # TF-IDF table
+    out_md.append("## TF-IDF — Top Terms")
+    if det["tfidf"]:
+        out_md.append("\n| term | tf-idf |\n|---|---:|")
+        for term, score in det["tfidf"][:30]:
+            out_md.append(f"| {term} | {score:.4f} |")
+        out_md.append("")
+    else:
+        out_md.append("_No textual content available to compute TF-IDF._\n")
 
-    # User keywords (if any)
-    if user_keywords:
-        lines.append("\n## 🔑 Tracked Keywords (User-Defined)\n")
-        lines.append("| Keyword | Mentions |\n|---|---|")
-        for kw, cnt in keyword_counts.items():
-            lines.append(f"| {kw} | {cnt} |")
+    # Tracked & Auto Keywords
+    out_md.append("## Tracked & Auto Keywords")
+    if det["tracked_keyword_counts"]:
+        out_md.append("### Tracked (from `keywords/`)\n")
+        out_md.append("| keyword | mentions |\n|---|---:|")
+        for k, c in det["tracked_keyword_counts"]:
+            out_md.append(f"| {k} | {c} |")
+        out_md.append("")
+    else:
+        out_md.append("_No tracked keywords provided or no matches._\n")
 
-    # Auto “repetitive & important” keywords
-    lines.append("\n## ♻️ Repetitive High-Signal Keywords (Auto)\n")
-    lines.append("| Keyword | Mentions |\n|---|---|")
-    for kw, cnt in auto_keywords:
-        lines.append(f"| {kw} | {cnt} |")
+    if det["auto_keywords"]:
+        out_md.append("### Auto (top tf-idf candidates)\n")
+        out_md.append(", ".join([f"`{k}`" for k in det["auto_keywords"][:25]]))
+        out_md.append("")
 
-    # Trend image (from pipeline)
-    trend_path = os.path.join(os.path.dirname(out_path), "keyword_mentions.png")
-    if os.path.exists(trend_path):
-        lines.append("\n## 📊 Keyword Mention Trends\n")
-        lines.append(f"![Keyword Mentions]({os.path.basename(trend_path)})\n")
-
-    # Propaganda indicators
-    lines.append("\n## 🧠 Information Warfare / Propaganda Indicators\n")
-    lines.append(f"Detected **{propaganda_count}** messages containing propaganda cues.\n")
-    if propaganda_count > 0:
-        examples = propaganda_examples.head(10).itertuples(index=False)
-        for row in examples:
-            snippet = clean_text(getattr(row, "text", ""))[:300].replace("\n", " ").strip()
-            link = getattr(row, "url", "")
-            lines.append(f"> {snippet} ([source]({link}))")
+    # Trend image (if present)
+    out_md.append("## 📊 Keyword Trend")
+    if os.path.exists(trend_png):
+        out_md.append(f"![Keyword mentions over time]({trend_png})\n")
+    else:
+        out_md.append("_Trend image not found._\n")
 
     # Observables
-    if observables:
-        lines.append("\n## ⏱️ Time-Sensitive Observables\n")
-        for note, key, count in observables:
-            lines.append(f"- **{note}** (`{key}`) mentioned **{count}** times")
+    out_md.append("## ⏱️ Observables")
+    if det["observables_table"]:
+        out_md.append("| observable | count |\n|---|---:|")
+        for obs, c in det["observables_table"]:
+            out_md.append(f"| {obs} | {c} |")
+        out_md.append("")
     else:
-        lines.append("\n## ⏱️ Time-Sensitive Observables\n_No salient observables detected._")
+        out_md.append("_No observables found._\n")
 
-    # Actor mentions
-    lines.append("\n## 👤 Actor Mentions\n")
-    lines.append("| Actor | Mentions |\n|---|---|")
-    for actor, cnt in actor_summary:
-        lines.append(f"| {actor} | {cnt} |")
+    # Actors
+    out_md.append("## 👤 Actors")
+    if det["actors_table"]:
+        out_md.append("| actor (group) | messages |\n|---|---:|")
+        for grp, c in det["actors_table"]:
+            out_md.append(f"| {grp} | {c} |")
+        out_md.append("")
+    else:
+        out_md.append("_No actors found._\n")
 
-    # Cross-posted items (dedup clusters)
-    lines.append("\n## 🔎 Source-Corroborated Items (Cross-posted / Duplicates)\n")
-    for msg in deduped_msgs[:25]:
-        quote = msg["text"][:280].replace("\n", " ").strip()
-        sources = ", ".join(msg["sources"][:6])
-        if len(msg["sources"]) > 6:
-            sources += ", …"
-        lines.append(f"- {quote} _(seen in: {sources})_")
+    # Cross-posted items
+    out_md.append("## 🔎 Cross-posted Items")
+    any_x = False
+    if det["crosspost_urls"]:
+        any_x = True
+        out_md.append("### Same URL across multiple groups")
+        for url, groups in det["crosspost_urls"]:
+            groups_str = ", ".join(sorted(groups))
+            out_md.append(f"- {url} — **{groups_str}**")
+        out_md.append("")
+    if det["crosspost_texts"]:
+        any_x = True
+        out_md.append("### Exact same text seen in multiple groups (top)")
+        for snippet, groups in det["crosspost_texts"][:20]:
+            groups_str = ", ".join(sorted(groups))
+            out_md.append(f"- “{snippet}” — **{groups_str}**")
+        out_md.append("")
+    if not any_x:
+        out_md.append("_No cross-posted items detected._\n")
 
-    lines.append("\n---\n_Generated by LLM-first pipeline (with CPU fallbacks)_\n")
+    # Footer
+    out_md.append("---\n_Generated by Hybrid pipeline (LLM + deterministic metrics)_\n")
 
-    md = "\n".join(lines)
-    md = md.encode("utf-8", "ignore").decode("utf-8")
+    final_md = "\n".join(out_md).strip() + "\n"
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(md)
-    print(f"📝 Markdown report saved to: {out_path}")
+    # Primary write
+    _write_file(out_path, final_md)
 
-# ---- Optional CLI (for ad-hoc runs) ----
-def load_csv(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    expected = {"message_id","group","date","text","url"}
-    missing = expected - set(df.columns)
-    if missing:
-        raise ValueError(f"CSV missing columns: {missing}")
-    return df
+    # Dated copy (YYYY-MM-DD_summary.md) alongside out_path
+    date_tag = _local_datestr()
+    dated_dir = os.path.dirname(out_path) or "."
+    dated_path = os.path.join(dated_dir, f"{date_tag}_summary.md")
+    _write_file(dated_path, final_md)
 
-def parse_keywords(arg: str):
-    if not arg:
+
+# ---------------------
+# LLM plumbing (Markdown output)
+# ---------------------
+
+def _call_ollama_markdown(host: str, model: str, temp: float, max_tokens: int, num_ctx: int,
+                          evidence: List[Dict[str, str]], topics: List[str], det: Dict[str, Any],
+                          user_keywords: List[str] | None, force_brief: bool, num_predict_boost: float) -> str:
+    url = f"{host}/api/chat"
+
+    system = (
+        "You are an intelligence analyst. Produce a concise, decision-ready Markdown report. "
+        "Use only the supplied EVIDENCE URLs for quotes. Avoid speculation. Keep bullets ≤ 24 words."
+    )
+
+    def compact(s: str, lim: int = 360) -> str:
+        s = RE_WS.sub(" ", (s or "")).strip()
+        return (s[: lim - 1] + "…") if len(s) > lim else s
+
+    ev_items = [
+        {
+            "text": compact(sn.get("text")),
+            "url": sn.get("url") or "",
+            "date": sn.get("date") or "",
+            "group": sn.get("group") or "",
+        }
+        for sn in evidence[:12]
+    ]
+
+    tracked_kw = ", ".join(sorted(set((user_keywords or []))))
+
+    # Deterministic signals snapshot for model context
+    tfidf_terms = ", ".join([t for t, _ in det.get("tfidf", [])[:25]])
+    observed_domains = ", ".join([d for d, _ in det.get("observables_table", [])[:10]])
+
+    # Strict section order and headings (LLM should output exactly this skeleton)
+    skeleton = (
+        f"## 🧭 Executive Summary (LLM — {model})\n\n"
+        "## 🔎 Topics to Explore (from data)\n\n"
+        "## 📚 Key Narratives (LLM)\n\n"
+        "## 🧠 Information Operations / Propaganda (LLM)\n\n"
+        "## ⚠️ Near-term Risk Outlook (LLM)\n\n"
+        "## 🎯 Adversary Objectives (LLM)\n\n"
+        "## 🔍 Collection Gaps & Next Steps (LLM)\n\n"
+        "## 🧪 Method Notes (LLM)\n\n"
+        "## 🔗 Evidence & Citations (LLM)\n"
+    )
+
+    brief_clause = ("\nTOTAL LENGTH ≤ 600 words. Prefer bullets; compress phrasing.\n"
+                    if force_brief else "")
+
+    content = (
+        "TASK: Write the following Markdown sections in the exact order and headings shown below.\n"
+        "Do not add extra intro/outro lines.\n\n"
+        f"SECTION SKELETON:\n{skeleton}\n\n"
+        f"TRACKED_KEYWORDS: {tracked_kw}\n"
+        f"SUGGESTED_TOPICS (deterministic): {json.dumps(topics, ensure_ascii=False)}\n"
+        f"TFIDF_TERMS: {tfidf_terms}\n"
+        f"OBSERVED_DOMAINS: {observed_domains}\n\n"
+        "EVIDENCE_INPUT (max 12):\n"
+        f"{json.dumps(ev_items, ensure_ascii=False)}\n\n"
+        "GUIDELINES:\n"
+        "- Executive Summary: 4–8 sentences.\n"
+        "- Risk bullets labeled Low / Medium / High.\n"
+        "- Cite only from EVIDENCE_INPUT using > quote + ([source](URL)).\n"
+        "- Keep everything tight and non-redundant; avoid hedging and speculation.\n"
+        f"{brief_clause}"
+    )
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ],
+        "stream": False,
+        # Markdown output (no JSON format)
+        "options": {
+            "temperature": temp,
+            "num_predict": int(max_tokens * num_predict_boost),
+            "num_ctx": int(num_ctx),
+        },
+    }
+
+    last_err = None
+    for _ in range(2):
+        try:
+            resp = requests.post(url, json=payload, timeout=90)
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+            md = (data.get("message", {}) or {}).get("content", "").strip()
+            return md
+        except Exception as e:
+            last_err = e
+            time.sleep(0.6)
+    raise RuntimeError(f"LLM call failed: {last_err}")
+
+
+def _looks_incomplete(md: str) -> bool:
+    if not md or not isinstance(md, str):
+        return True
+    must = [
+        "## 🧭 Executive Summary (LLM)",
+        "## 📚 Key Narratives (LLM)",
+        "## 🔗 Evidence & Citations (LLM)",
+    ]
+    missing = any(h not in md for h in must)
+    # Truncation heuristic: ends with unfinished last line (no newline) or dangling bullet
+    ends_odd = not md.endswith("\n") or md.rstrip().endswith(('-','*'))
+    return bool(missing or ends_odd)
+
+
+# ---------------------
+# Deterministic appendices & inputs
+# ---------------------
+
+def _build_deterministic(df, user_keywords=None) -> Dict[str, Any]:
+    texts = list(df["text"])  # pandas Series compatible
+    groups = list(df["group"])  # type: ignore
+    urls = list(df["url"])  # type: ignore
+
+    tfidf = _simple_tfidf(texts)
+
+    # Tracked keyword counts
+    tracked_kw = [k.strip() for k in (user_keywords or []) if k and k.strip()]
+    tracked_counts = []
+    if tracked_kw:
+        lc_texts = [t.lower() if isinstance(t, str) else "" for t in texts]
+        for kw in sorted(set(tracked_kw)):
+            patt = re.compile(rf"\b{re.escape(kw.lower())}\b")
+            c = sum(1 for t in lc_texts if patt.search(t))
+            tracked_counts.append((kw, c))
+        tracked_counts.sort(key=lambda x: (-x[1], x[0]))
+
+    # Auto keywords from tf-idf
+    auto_keywords = [t for t, _ in tfidf if t not in STOPWORDS][:50]
+
+    # Observables: domains
+    domains = []
+    for u in urls:
+        if not isinstance(u, str):
+            continue
+        m = re.match(r"https?://([^/]+)/?", u)
+        if m:
+            domains.append(m.group(1).lower())
+    obs_counts = Counter(domains).most_common(25)
+
+    # Actors
+    grp_counts = Counter([g for g in groups if isinstance(g, str)]).most_common(25)
+
+    # Cross-posts (URL across groups)
+    url_groups: Dict[str, set] = defaultdict(set)
+    for u, g in zip(urls, groups):
+        if isinstance(u, str) and isinstance(g, str) and u:
+            url_groups[u].add(g)
+    crosspost_urls = [(u, sorted(gs)) for u, gs in url_groups.items() if len(gs) > 1]
+    crosspost_urls.sort(key=lambda x: (-len(x[1]), x[0]))
+
+    # Cross-posts (exact same text across groups)
+    text_groups: Dict[str, set] = defaultdict(set)
+    for t, g in zip(texts, groups):
+        if isinstance(t, str) and isinstance(g, str):
+            key = _normalize_text(t)
+            if key:
+                text_groups[key].add(g)
+    cross_texts = [
+        (key[:160] + ("…" if len(key) > 160 else ""), sorted(gs))
+        for key, gs in text_groups.items() if len(gs) > 1
+    ]
+    cross_texts.sort(key=lambda x: (-len(x[1]), x[0]))
+
+    return {
+        "tfidf": tfidf,
+        "tracked_keyword_counts": tracked_counts,
+        "auto_keywords": auto_keywords,
+        "observables_table": obs_counts,
+        "actors_table": grp_counts,
+        "crosspost_urls": crosspost_urls,
+        "crosspost_texts": cross_texts,
+    }
+
+
+def _normalize_text(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    s = RE_WS.sub(" ", s.strip())
+    return s
+
+
+def _tokenize(s: str) -> List[str]:
+    if not isinstance(s, str):
         return []
-    if os.path.isfile(arg):
-        with open(arg, "r", encoding="utf-8") as f:
-            return [ln.strip() for ln in f if ln.strip()]
-    return [x.strip() for x in arg.split(",") if x.strip()]
+    s = s.lower()
+    s = re.sub(r"https?://\S+", " ", s)
+    s = re.sub(r"[^a-z0-9_#@]+", " ", s)
+    toks = [t for t in s.split() if t and t not in STOPWORDS and len(t) >= 3]
+    return toks
 
-if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser(description="LLM-first Telegram report builder")
-    p.add_argument("--input", "-i", required=True, help="CSV with columns: message_id,group,date,text,url")
-    p.add_argument("--output", "-o", default="analytics/output/summary.md", help="Markdown output path")
-    p.add_argument("--keywords", "-k", default="", help="Comma-separated keywords OR path to a .txt list")
-    args = p.parse_args()
-    df = load_csv(args.input)
-    kws = parse_keywords(args.keywords)
-    write_markdown_report(df, user_keywords=kws, out_path=args.output)
+
+def _simple_tfidf(texts: List[str]) -> List[Tuple[str, float]]:
+    docs = [t for t in texts if isinstance(t, str) and t.strip()]
+    if not docs:
+        return []
+    N = len(docs)
+    from collections import Counter as C
+    tfs: List[C] = []
+    df: C = C()
+    for d in docs:
+        toks = _tokenize(d)
+        tf = C(toks)
+        tfs.append(tf)
+        for tok in set(tf):
+            df[tok] += 1
+    scores: C = C()
+    for tf in tfs:
+        for tok, f in tf.items():
+            idf = math.log((N + 1) / (df[tok] + 1)) + 1  # smoothed idf
+            scores[tok] += f * idf
+    for tok in list(scores):
+        scores[tok] /= N
+    return sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+
+
+def _derive_topics(det: Dict[str, Any], top_k: int = 8) -> List[str]:
+    """Deterministically derive compact topics using TF-IDF anchors + n-gram counts."""
+    terms = [t for t, _ in det.get("tfidf", [])[:120]]
+    if not terms:
+        return []
+
+    def is_stop(tok: str) -> bool:
+        return (tok in STOPWORDS) or (len(tok) < 3)
+
+    grams: Counter = Counter()
+    pseudo = " ".join(terms)
+    toks = [t for t in re.sub(r"[^a-z0-9_#@]+", " ", pseudo.lower()).split() if not is_stop(t)]
+
+    for a, b in zip(toks, toks[1:]):
+        if is_stop(a) or is_stop(b):
+            continue
+        grams[f"{a} {b}"] += 1
+    for a, b, c in zip(toks, toks[1:], toks[2:]):
+        if is_stop(a) or is_stop(b) or is_stop(c):
+            continue
+        grams[f"{a} {b} {c}"] += 1
+
+    top_anchor = set([t for t, _ in det.get("tfidf", [])[:30]])
+    scored: List[Tuple[str, float]] = []
+    for g, f in grams.items():
+        anchor_bonus = 1.0 if any(tok in top_anchor for tok in g.split()) else 0.0
+        scored.append((g, f + anchor_bonus))
+    scored.sort(key=lambda x: (-x[1], x[0]))
+
+    topics: List[str] = [g for g, _ in scored[:top_k]]
+
+    if len(topics) < top_k:
+        for t in terms:
+            if t not in topics and not is_stop(t):
+                topics.append(t)
+            if len(topics) >= top_k:
+                break
+
+    return topics[:top_k]
+
+
+# ---------------------
+# Evidence selection (clustering + budgeting)
+# ---------------------
+
+def _cluster_and_select_evidence(df, max_items: int = 12) -> List[Dict[str, str]]:
+    """Cluster near-duplicate posts & cross-posts; return representative evidence rows.
+    Clustering strategy:
+      1) Hard group by URL (exact match) first.
+      2) For rows without URL duplicates, cluster by Jaccard ≥ 0.7 over token sets.
+      3) Choose a representative per cluster (prefer most recent with a URL),
+         and produce a concise snippet (<= 360 chars).
+    """
+    import pandas as _pd
+
+    s = df.copy()
+    s["date"] = _pd.to_datetime(s["date"], errors="coerce", utc=True)
+
+    # 1) Primary: group by exact URL
+    url_groups: Dict[str, List[int]] = defaultdict(list)
+    for i, u in enumerate(s["url"].astype(str).tolist()):
+        url_groups[u].append(i)
+
+    visited = set()
+    clusters: List[List[int]] = []
+
+    # same-URL clusters
+    for u, idxs in url_groups.items():
+        if len(idxs) > 1:
+            clusters.append(idxs)
+            visited.update(idxs)
+
+    # 2) Jaccard clustering for remaining
+    def toks(text: str) -> set:
+        text = str(text or "").lower()
+        text = re.sub(r"https?://\S+", " ", text)
+        text = re.sub(r"[^a-z0-9_#@]+", " ", text)
+        return set([t for t in text.split() if t and t not in STOPWORDS])
+
+    remaining = [i for i in range(len(s)) if i not in visited]
+    text_sets = {i: toks(s.iloc[i]["text"]) for i in remaining}
+    used = set()
+    for i in remaining:
+        if i in used:
+            continue
+        group = [i]
+        Si = text_sets[i]
+        for j in remaining:
+            if j in used or j == i:
+                continue
+            Sj = text_sets[j]
+            if not Si or not Sj:
+                continue
+            jac = len(Si & Sj) / max(1, len(Si | Sj))
+            if jac >= 0.7:
+                group.append(j)
+                used.add(j)
+        used.add(i)
+        clusters.append(group)
+
+    # 3) Representative per cluster
+    reps: List[Dict[str, str]] = []
+    for idxs in clusters:
+        sub = s.iloc[idxs].sort_values("date", ascending=False)
+        # prefer rows that have a real URL
+        with_url = sub[sub["url"].astype(str).str.startswith("http")]
+        rep = with_url.iloc[0] if not with_url.empty else sub.iloc[0]
+        reps.append({
+            "message_id": str(rep["message_id"]),
+            "group": str(rep["group"]) if rep["group"] is not None else "",
+            "date": str(rep["date"]) if rep["date"] is not None else "",
+            "text": _normalize_text(str(rep["text"]))[:360],
+            "url": str(rep["url"]) if rep["url"] is not None else "",
+        })
+
+    # Add a few singletons (recent, url-first) to reach max_items
+    if len(reps) < max_items:
+        singles = s[~s.index.isin([i for grp in clusters for i in grp])]  # type: ignore
+        singles = singles.sort_values(["date"], ascending=False)
+        for _, row in singles.iterrows():
+            reps.append({
+                "message_id": str(row["message_id"]),
+                "group": str(row["group"]) if row["group"] is not None else "",
+                "date": str(row["date"]) if row["date"] is not None else "",
+                "text": _normalize_text(str(row["text"]))[:360],
+                "url": str(row["url"]) if row["url"] is not None else "",
+            })
+            if len(reps) >= max_items:
+                break
+
+    # Final URL dedupe (just in case) and cap length
+    seen_urls = set()
+    out: List[Dict[str, str]] = []
+    for r in reps:
+        u = r.get("url", "")
+        if u and u in seen_urls:
+            continue
+        seen_urls.add(u)
+        r["text"] = r.get("text", "")[:360]
+        out.append(r)
+        if len(out) >= max_items:
+            break
+
+    return out
+
+
+def _select_representative_snippets(df, max_snippets=12, min_snippets=6) -> List[Dict[str, str]]:
+    """Fallback snippet selector (diverse by group, recent, URL-first, dedupes URLs)."""
+    import pandas as _pd
+
+    s = df.copy()
+    s["date"] = _pd.to_datetime(s["date"], errors="coerce", utc=True)
+    s["url_ok"] = s["url"].astype(str).str.startswith("http")
+    s = s.sort_values(["url_ok", "date"], ascending=[False, False])
+
+    buckets = {g: gdf for g, gdf in s.groupby("group")}
+    order = sorted(buckets.keys(), key=lambda g: -len(buckets[g]))
+
+    chosen: List[Dict[str, str]] = []
+    seen_urls = set()
+    while len(chosen) < max_snippets:
+        made = False
+        for g in order:
+            gdf = buckets[g]
+            idx = len([r for r in chosen if r["group"] == g])
+            if idx < len(gdf):
+                row = gdf.iloc[idx]
+                url = str(row["url"]) if row["url"] is not None else ""
+                if url and url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                chosen.append({
+                    "message_id": str(row["message_id"]),
+                    "group": str(row["group"]) if row["group"] is not None else "",
+                    "date": str(row["date"]) if row["date"] is not None else "",
+                    "text": _normalize_text(str(row["text"]))[:360],
+                    "url": url,
+                })
+                made = True
+                if len(chosen) >= max_snippets:
+                    break
+        if not made:
+            break
+
+    if len(chosen) < min_snippets:
+        for _, row in s.iterrows():
+            if len(chosen) >= min_snippets:
+                break
+            url = str(row["url"]) if row["url"] is not None else ""
+            if url and url in seen_urls:
+                continue
+            seen_urls.add(url)
+            chosen.append({
+                "message_id": str(row["message_id"]),
+                "group": str(row["group"]) if row["group"] is not None else "",
+                "date": str(row["date"]) if row["date"] is not None else "",
+                "text": _normalize_text(str(row["text"]))[:360],
+                "url": url,
+            })
+    return chosen
+
+
+def _budget_snippets(snips: List[Dict[str, str]], max_chars: int = 8000) -> List[Dict[str, str]]:
+    """Limit total prompt size by trimming per-snippet text adaptively to fit max_chars."""
+    out: List[Dict[str, str]] = []
+    used = 0
+    def remaining() -> int:
+        return max(0, max_chars - used)
+
+    for s in snips:
+        if remaining() <= 0:
+            break
+        txt = s.get("text", "")
+        per_cap = min(900, max(200, remaining() // max(1, (len(snips) - len(out)))))
+        trimmed = txt[:per_cap]
+        size = len(trimmed) + len(s.get("url", "")) + 64
+        if size > remaining():
+            break
+        s2 = dict(s)
+        s2["text"] = trimmed
+        out.append(s2)
+        used += size
+    return out
+
+
+# ---------------------
+# IO
+# ---------------------
+
+def _write_file(path: str, content: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _local_datestr() -> str:
+    return _dt.datetime.now().strftime("%Y-%m-%d")

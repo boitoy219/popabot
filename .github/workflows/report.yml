@@ -1,0 +1,141 @@
+name: Build Telegram Report (LLM-only)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *"  # daily at 05:00 UTC
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    environment: env
+    timeout-minutes: 45
+
+    env:
+      PYTHON_VERSION: "3.10"
+
+      # LLM / Ollama (defaults; can be overridden by Environment secrets)
+      OLLAMA_HOST: "http://127.0.0.1:11434"
+      POPABOT_LLM: "qwen2.5:7b-instruct-q4_K_M"
+      POPABOT_LLM_TEMP: "0.2"
+      POPABOT_LLM_MAX_TOKENS: "1536"
+      POPABOT_LLM_CTX: "8192"
+      POPABOT_SNIPPET_CHAR_BUDGET: "8000"
+      POPABOT_USE_LLM: "1"
+
+      # Pipeline (scraper off in CI)
+      POPABOT_USE_SCRAPER: "0"
+      POPABOT_SAMPLE_N: "0"
+      POPABOT_OUT_MD: "analytics/output/summary.md"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+
+      - name: Export environment secrets to env
+        shell: bash
+        run: |
+          export_to_env () { [ -n "$1" ] && echo "$2=$1" >> "$GITHUB_ENV"; }
+          # Scraper creds (only relevant if you set POPABOT_USE_SCRAPER=1)
+          export_to_env "${{ secrets.API_ID }}"                  "API_ID"
+          export_to_env "${{ secrets.API_HASH }}"                "API_HASH"
+          export_to_env "${{ secrets.SESSION_NAME }}"            "SESSION_NAME"
+          # LLM (optional overrides)
+          export_to_env "${{ secrets.OLLAMA_HOST }}"             "OLLAMA_HOST"
+          export_to_env "${{ secrets.POPABOT_LLM }}"             "POPABOT_LLM"
+          export_to_env "${{ secrets.POPABOT_LLM_TEMP }}"        "POPABOT_LLM_TEMP"
+          export_to_env "${{ secrets.POPABOT_LLM_MAX_TOKENS }}"  "POPABOT_LLM_MAX_TOKENS"
+          export_to_env "${{ secrets.POPABOT_LLM_CTX }}"         "POPABOT_LLM_CTX"
+          export_to_env "${{ secrets.POPABOT_SNIPPET_CHAR_BUDGET }}" "POPABOT_SNIPPET_CHAR_BUDGET"
+          # Pipeline toggles / outputs (optional)
+          export_to_env "${{ secrets.POPABOT_USE_SCRAPER }}"     "POPABOT_USE_SCRAPER"
+          export_to_env "${{ secrets.POPABOT_SAMPLE_N }}"        "POPABOT_SAMPLE_N"
+          export_to_env "${{ secrets.POPABOT_OUT_MD }}"          "POPABOT_OUT_MD"
+          export_to_env "${{ secrets.POPABOT_USE_LLM }}"         "POPABOT_USE_LLM"
+
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-${{ runner.os }}-${{ env.POPABOT_LLM }}
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama --version
+
+      - name: Start Ollama
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in {1..60}; do
+            curl -s ${OLLAMA_HOST}/api/tags >/dev/null && break
+            sleep 1
+          done
+          echo "Ollama ready at ${OLLAMA_HOST}"
+
+      - name: Pull model (uses cache if present)
+        run: |
+          ollama pull "${POPABOT_LLM}"
+          ollama list
+
+      - name: Ensure input CSV exists
+        shell: bash
+        run: |
+          mkdir -p data
+          if [ ! -f data/new_messages.csv ]; then
+            if [ -f data/latest_combined.csv ]; then
+              cp data/latest_combined.csv data/new_messages.csv
+              echo "Using data/latest_combined.csv as new_messages.csv"
+            else
+              echo "❌ data/new_messages.csv not found and no data/latest_combined.csv fallback."
+              exit 1
+            fi
+          fi
+          echo "Input rows: $(python - <<'PY'
+import pandas as pd; print(len(pd.read_csv('data/new_messages.csv')))
+PY
+)"
+
+      - name: Run pipeline (LLM-only)
+        env:
+          OLLAMA_HOST: ${{ env.OLLAMA_HOST }}
+          POPABOT_LLM: ${{ env.POPABOT_LLM }}
+          POPABOT_LLM_TEMP: ${{ env.POPABOT_LLM_TEMP }}
+          POPABOT_LLM_MAX_TOKENS: ${{ env.POPABOT_LLM_MAX_TOKENS }}
+          POPABOT_LLM_CTX: ${{ env.POPABOT_LLM_CTX }}
+          POPABOT_SNIPPET_CHAR_BUDGET: ${{ env.POPABOT_SNIPPET_CHAR_BUDGET }}
+          POPABOT_USE_LLM: ${{ env.POPABOT_USE_LLM }}
+          POPABOT_USE_SCRAPER: ${{ env.POPABOT_USE_SCRAPER }}
+          POPABOT_SAMPLE_N: ${{ env.POPABOT_SAMPLE_N }}
+          POPABOT_OUT_MD: ${{ env.POPABOT_OUT_MD }}
+        run: python pipeline.py
+
+      - name: Upload analytics output
+        uses: actions/upload-artifact@v4
+        with:
+          name: analytics-output
+          path: analytics/output/
+          if-no-files-found: error
+
+      - name: Dump Ollama log on failure
+        if: failure()
+        run: |
+          echo "---- /tmp/ollama.log ----"
+          tail -n 200 /tmp/ollama.log || true
