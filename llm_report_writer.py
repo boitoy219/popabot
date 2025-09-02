@@ -1,67 +1,67 @@
 # -*- coding: utf-8 -*-
 """
-report_writer.py — Hybrid Intelligence Report Builder (CPU baseline + optional local LLM)
+llm_report_writer.py — LLM-first report writer (CPU-friendly, GH Actions-safe)
 
-- Baseline: TextRank + TF-IDF + rule-based signals (CPU-only, no GPUs/models needed).
-- If a local LLM is available (via llm_writer + Ollama), we *augment* the report:
-  * Exec Summary upgraded with LLM synthesis
-  * Adds narrative, propaganda, risk, objectives, collection gaps, method notes
+- Prefers local Ollama LLM via llm_writer.py to generate analytic sections.
+- Graceful fallback to heuristic summaries if the LLM isn’t available.
+- No wordcloud (removed by design).
+- Includes keyword trend plot if pipeline created it.
 
-Control with env:
-- POPABOT_USE_LLM=1 (default) to enable calls; set to 0 to force CPU-only
-- OLLAMA_HOST, POPABOT_LLM etc. are read by llm_writer
+Backwards compatible with old pipeline signature:
+  write_markdown_report(df, topic_model, keywords)
+and with the refactored one:
+  write_markdown_report(df, user_keywords=keywords)
 """
+
+from __future__ import annotations
 
 import os
 import re
 import sys
-import argparse
 from datetime import datetime
 from collections import Counter, defaultdict
+from typing import List, Tuple, Dict, Any
 
 import pandas as pd
 import numpy as np
 
-# NLP + Summarization (CPU-only)
+# Light NLP
 import nltk
 from nltk.tokenize import sent_tokenize
-from sumy.summarizers.text_rank import TextRankSummarizer
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
 
-# ML features
+# Heuristic summarization fallback
+try:
+    from sumy.summarizers.text_rank import TextRankSummarizer
+    from sumy.parsers.plaintext import PlaintextParser
+    from sumy.nlp.tokenizers import Tokenizer
+    SUMY_OK = True
+except Exception:
+    SUMY_OK = False
+
+# TF-IDF
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Visualization (optional wordcloud)
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from wordcloud import WordCloud
-
-# Optional near-duplicate detection
+# Optional near-duplicate merge
 try:
     from rapidfuzz import fuzz
     RAPIDFUZZ_OK = True
 except Exception:
     RAPIDFUZZ_OK = False
 
-# -------- Optional LLM (local via Ollama) ----------
-LLM_ENABLED = os.getenv("POPABOT_USE_LLM", "1") != "0"
+# LLM helper
 try:
-    # These helpers are no-ops when Ollama/model aren’t available
-    from llm_writer import enrich_stats_for_llm, try_llm_analytic_report  # noqa
-    HAVE_LLM_WRITER = True
+    from llm_writer import try_llm_analytic_report, enrich_stats_for_llm
 except Exception:
-    HAVE_LLM_WRITER = False
+    # If llm_writer isn’t present, we’ll just skip LLM use
+    try_llm_analytic_report = None
+    enrich_stats_for_llm = None
 
-# ---------- Version guard ----------
+# ---------- Version & NLTK ----------
 if sys.version_info >= (3, 13):
     raise RuntimeError("Python 3.13+ not supported here. Use Python 3.10 or 3.11.")
-
-# ---------- NLTK resources ----------
 nltk.download("punkt", quiet=True)
 
-# ---------- Domain stopwords ----------
+# ---------- Stopwords ----------
 RU_SW = {
     "и","в","во","не","что","он","на","я","с","со","как","а","то","все","она","так","его","но","да",
     "ты","к","у","же","вы","за","бы","по","ее","мне","было","вот","от","меня","еще","нет","о","из",
@@ -83,12 +83,12 @@ EN_SW = {
     "all","some","many","few"
 }
 GEN_SW = {
-    "—","–","-","•","…","—","–","—","️","►","►","▪","🔴","⚡️","⭐️","🟢","🔸","🔹","#","@","http","https","t.me",
+    "—","–","-","•","…","—","–","—","️","►","▪","🔴","⚡️","⭐️","🟢","🔸","🔹","#","@","http","https","t.me",
     "telegram","📣","📌","📍","📱","👉","🌟","💬","✉️","📩","📨","📧","💌","📥","🎼","🌐","__","**"
 }
 STOPWORDS = RU_SW | EN_SW | GEN_SW
 
-# ---------- Utility cleaning ----------
+# ---------- Cleaning ----------
 URL_RE = re.compile(r"https?://\S+")
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 WS_RE = re.compile(r"\s+")
@@ -113,7 +113,7 @@ def normalize_for_hash(s: str) -> str:
     s = WS_RE.sub(" ", s).strip()
     return s
 
-def sent_split(text: str, lang_hint: str = "russian") -> list:
+def sent_split(text: str) -> list:
     try:
         return sent_tokenize(text, language="russian")
     except Exception:
@@ -122,22 +122,26 @@ def sent_split(text: str, lang_hint: str = "russian") -> list:
         except Exception:
             return re.split(r"(?<=[.!?])\s+", text)
 
-# ---------- Summarization (TextRank, CPU-only) ----------
+# ---------- Summarization Fallback ----------
 def textrank_summary(text: str, n_sentences: int = 7, lang: str = "russian") -> str:
     text = clean_text(text)
     if not text:
         return ""
-    try:
-        parser = PlaintextParser.from_string(text, Tokenizer(lang))
-    except Exception:
-        parser = PlaintextParser.from_string(text, Tokenizer("english"))
-    summarizer = TextRankSummarizer()
-    max_sents = max(1, min(n_sentences, len(parser.document.sentences)))
-    summary = summarizer(parser.document, max_sents)
-    return " ".join(str(s) for s in summary).strip()
+    if SUMY_OK:
+        try:
+            parser = PlaintextParser.from_string(text, Tokenizer(lang))
+        except Exception:
+            parser = PlaintextParser.from_string(text, Tokenizer("english"))
+        summarizer = TextRankSummarizer()
+        max_sents = max(1, min(n_sentences, len(parser.document.sentences)))
+        summary = summarizer(parser.document, max_sents)
+        return " ".join(str(s) for s in summary).strip()
+    # very light fallback: take first N high-information sentences
+    sents = sent_split(text)[:max(1, n_sentences)]
+    return " ".join(sents).strip()
 
-# ---------- TF-IDF Themes ----------
-def extract_tfidf_terms(texts, top_n=12, ngram_range=(1,2), min_df=2, max_features=6000):
+# ---------- TF-IDF ----------
+def extract_tfidf_terms(texts, top_n=14, ngram_range=(1,2), min_df=2, max_features=6000):
     vec = TfidfVectorizer(
         analyzer="word",
         token_pattern=r"(?u)\b\w[\w\-]+\b",
@@ -145,29 +149,26 @@ def extract_tfidf_terms(texts, top_n=12, ngram_range=(1,2), min_df=2, max_featur
         stop_words=None,
         ngram_range=ngram_range,
         min_df=min_df,
-        max_features=max_features
+        max_features=max_features,
     )
     X = vec.fit_transform(texts)
     terms = vec.get_feature_names_out()
     scores = np.asarray(X.sum(axis=0)).ravel()
     items = list(zip(terms, scores))
-
     def keep(term):
         parts = term.split()
         if any((p in STOPWORDS) or (len(p) <= 2) for p in parts):
             return False
         return True
-
     items = [(t, s) for (t, s) in items if keep(t)]
     items.sort(key=lambda x: x[1], reverse=True)
     return items[:top_n]
 
-# ---------- Duplicate handling ----------
+# ---------- Duplicates ----------
 def identify_duplicates(df, use_fuzzy=True, fuzzy_threshold=94):
-    buckets = defaultdict(list)
+    buckets: Dict[str, list] = defaultdict(list)
     for _, row in df.iterrows():
-        norm = normalize_for_hash(row["text"])
-        buckets[norm].append(row)
+        buckets[normalize_for_hash(row["text"])].append(row)
 
     clusters = []
     for _, rows in buckets.items():
@@ -177,14 +178,16 @@ def identify_duplicates(df, use_fuzzy=True, fuzzy_threshold=94):
         clusters.append({"text": canonical, "sources": list(dict.fromkeys(srcs))})
 
     if use_fuzzy and RAPIDFUZZ_OK and len(clusters) > 1:
-        merged, used = [], set()
-        from rapidfuzz import fuzz as _fz  # local alias
+        merged = []
+        used = set()
         for i in range(len(clusters)):
-            if i in used: continue
+            if i in used:
+                continue
             base = clusters[i]
             for j in range(i+1, len(clusters)):
-                if j in used: continue
-                score = _fz.token_set_ratio(base["text"], clusters[j]["text"])
+                if j in used:
+                    continue
+                score = fuzz.token_set_ratio(base["text"], clusters[j]["text"])
                 if score >= fuzzy_threshold:
                     base["sources"].extend(clusters[j]["sources"])
                     base["sources"] = list(dict.fromkeys(base["sources"]))
@@ -195,24 +198,16 @@ def identify_duplicates(df, use_fuzzy=True, fuzzy_threshold=94):
         clusters = merged
     return clusters
 
-# ---------- Keyword frequencies ----------
-def build_kw_regex(kw: str) -> str:
-    parts = re.split(r"[\s\-]+", kw.strip().lower())
-    core = r"[-\s]*".join(map(re.escape, parts))
-    return rf"\b{core}\b"
-
+# ---------- Keywords ----------
 def count_keywords(df, keywords):
     out = {}
     texts = df["text"].astype(str).str.lower()
     for kw in keywords:
-        pat = build_kw_regex(kw)
-        try:
-            out[kw] = int(texts.str.count(pat, flags=re.IGNORECASE).sum())
-        except TypeError:
-            out[kw] = int(texts.apply(lambda t: len(re.findall(pat, t, flags=re.IGNORECASE))).sum())
+        pattern = rf"\b{re.escape(str(kw).lower())}\b"
+        out[kw] = int(texts.str.count(pattern).sum())
     return dict(sorted(out.items(), key=lambda x: x[1], reverse=True))
 
-def auto_top_keywords(df, top_n=30):
+def auto_top_keywords(df, top_n=35):
     counts = Counter()
     for s in df["text"].astype(str):
         s = clean_text(s).lower()
@@ -223,7 +218,7 @@ def auto_top_keywords(df, top_n=30):
             counts[t] += 1
     return counts.most_common(top_n)
 
-# ---------- Propaganda cues ----------
+# ---------- Propaganda ----------
 PROP_CUES = [
     "nato","provocation","biolab","nazis","aggressor","strike","escalation","false flag",
     "disinformation","psychological","mobilization","hybrid",
@@ -238,7 +233,7 @@ def detect_propaganda_patterns(df):
     matches = df[mask].copy()
     return int(matches.shape[0]), matches[["text","url","group"]]
 
-# ---------- Actor mentions ----------
+# ---------- Actors ----------
 DEFAULT_ACTORS = [
     "путин","лукашенко","нато","зеленский","европа","польша","литва","латвия","эстония",
     "сша","одкб","шос","ес","украина","киев","москва","минск","калининград","гродно","брест",
@@ -252,58 +247,67 @@ def summarize_actors(df, actors=DEFAULT_ACTORS):
     res.sort(key=lambda x: x[1], reverse=True)
     return res
 
-# ---------- Time-sensitive observables ----------
+# ---------- Observables ----------
 OBSERVABLES = [
-    ("перемещ","Troop movement"), ("мобилизац","Mobilization references"),
-    ("гродно","Grodno deployments"), ("брест","Brest deployments"),
-    ("сувалк","Suwalki corridor"), ("учени","Military exercises"),
-    ("удар","Strike implication"), ("ядер","Nuclear context"),
-    ("орешник","Oreshnik system"), ("quadriga","Quadriga-2025 (NATO)"),
-    ("żelazny","Żelazny Obrońca (PL)"), ("namejs","Namejs-2025 (LV)"),
-    ("iron","Iron Spear / Shield (LT)"),
+    ("перемещ",  "Troop movement"),
+    ("мобилизац","Mobilization references"),
+    ("гродно",   "Grodno deployments"),
+    ("брест",    "Brest deployments"),
+    ("сувалк",   "Suwalki corridor"),
+    ("учени",    "Military exercises"),
+    ("удар",     "Strike implication"),
+    ("ядер",     "Nuclear context"),
+    ("орешник",  "Oreshnik system"),
+    ("quadriga", "Quadriga-2025 (NATO)"),
+    ("żelazny",  "Żelazny Obrońca (PL)"),
+    ("namejs",   "Namejs-2025 (LV)"),
+    ("iron",     "Iron Spear / Shield (LT)"),
 ]
 def tally_observables(df):
-    obs = []
+    obs_lines = []
     texts = df["text"].astype(str).str.lower()
     for k, note in OBSERVABLES:
         count = int(texts.str.count(k).sum())
         if count > 0:
-            obs.append((note, k, count))
-    return obs
+            obs_lines.append((note, k, count))
+    return obs_lines
 
-# ---------- Word cloud (optional) ----------
-def make_wordcloud(text, out_path):
-    try:
-        wc = WordCloud(width=1200, height=600, background_color="white")
-        wc.generate(text)
-        plt.figure(figsize=(12,6))
-        plt.imshow(wc, interpolation="bilinear")
-        plt.axis("off")
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        plt.savefig(out_path, bbox_inches="tight")
-        plt.close()
-        return True
-    except Exception:
-        return False
+# ---------- Core Writer ----------
+def write_markdown_report(df: pd.DataFrame, *args, out_path: str = "analytics/output/summary.md",
+                          user_keywords: Any = None, **kwargs):
+    """
+    Compatible with both:
+      write_markdown_report(df, topic_model, keywords)
+      write_markdown_report(df, user_keywords=keywords)
 
-# ---------- Report writer ----------
-def write_markdown_report(
-    df: pd.DataFrame,
-    out_path: str = "analytics/output/summary.md",
-    user_keywords: list = None,
-    make_cloud: bool = False  # default OFF based on your feedback
-):
+    We ignore 'topic_model' (no BERTopic here).
+    """
+    # Back-compat: infer user_keywords from positional args if needed
     if user_keywords is None:
+        # Old: (df, topic_model, keywords)
+        if len(args) >= 2 and isinstance(args[1], (list, set, tuple, dict)):
+            user_keywords = args[1]
+        # Sometimes pipeline may pass only keywords as 1st arg
+        elif len(args) == 1 and isinstance(args[0], (list, set, tuple, dict)):
+            user_keywords = args[0]
+        else:
+            user_keywords = []
+    # Normalize KW container
+    if isinstance(user_keywords, dict):
+        # Already a dict of counts? keep keys as the set we’ll count anyway
+        user_keywords = list(user_keywords.keys())
+    elif isinstance(user_keywords, (set, tuple)):
+        user_keywords = list(user_keywords)
+    elif not isinstance(user_keywords, list):
         user_keywords = []
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    # Validate columns
+    # Validate & clean df
     for col in ("text","url","group","date"):
         if col not in df.columns:
             raise ValueError(f"Input DataFrame missing required column: {col}")
 
-    # Normalize/clean
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True)
     df["text"] = df["text"].astype(str).apply(clean_text)
@@ -318,109 +322,86 @@ def write_markdown_report(
     end_date = date_max.strftime("%B %d, %Y") if pd.notna(date_max) else "N/A"
     date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Deduplicate + text pool
+    # Deduplicate clusters
     deduped_msgs = identify_duplicates(df, use_fuzzy=True, fuzzy_threshold=94)
-    dedup_text = "\n".join(msg["text"] for msg in deduped_msgs)
+    dedup_text = "\n".join(m["text"] for m in deduped_msgs)
 
-    # CPU Executive Summary
-    cpu_exec_summary = textrank_summary(dedup_text[:120000], n_sentences=8, lang="russian")
-
-    # Dominant TF-IDF terms
+    # Heuristic artifacts
     tfidf_terms = extract_tfidf_terms(df["text"].tolist(), top_n=14)
-
-    # Propaganda cues
     propaganda_count, propaganda_examples = detect_propaganda_patterns(df)
-
-    # Actors & Observables
     actor_summary = summarize_actors(df)
     observables = tally_observables(df)
-
-    # Keywords
-    keyword_counts = count_keywords(df, user_keywords) if user_keywords else {}
     auto_keywords = auto_top_keywords(df, top_n=35)
+    keyword_counts = count_keywords(df, user_keywords) if user_keywords else {}
 
-    # Optional word cloud
-    cloud_path = os.path.join(os.path.dirname(out_path), "wordcloud.png")
-    cloud_ok = make_wordcloud(dedup_text, cloud_path) if make_cloud else False
-
-    # ---------- LLM ENRICHMENT ----------
+    # Try LLM analytics
     llm_sections = {}
-    llm_used = False
-    llm_model = os.getenv("POPABOT_LLM") or os.getenv("OLLAMA_MODEL") or ""
-    if LLM_ENABLED and HAVE_LLM_WRITER:
-        try:
-            stats = enrich_stats_for_llm(
-                df,
-                tfidf_terms=tfidf_terms,
-                auto_keywords=auto_keywords,
-                user_keywords=keyword_counts,
-                observables=observables,
-                actor_summary=actor_summary,
-                propaganda_examples=propaganda_examples,
-                deduped_msgs=deduped_msgs,
-            )
-            llm_sections = try_llm_analytic_report(
-                df,
-                stats,
-                # Timeouts/limits are already read inside llm_writer via env; keep defaults here.
-            ) or {}
-            llm_used = bool(llm_sections)
-        except Exception:
-            llm_sections = {}
-            llm_used = False
+    if try_llm_analytic_report and enrich_stats_for_llm:
+        stats_for_llm = enrich_stats_for_llm(
+            df,
+            tfidf_terms=tfidf_terms,
+            auto_keywords=auto_keywords,
+            user_keywords=keyword_counts,
+            observables=observables,
+            actor_summary=actor_summary,
+            propaganda_examples=propaganda_examples,
+            deduped_msgs=deduped_msgs,
+        )
+        llm_sections = try_llm_analytic_report(
+            df,
+            stats=stats_for_llm,
+            temperature=0.2,
+            max_context_chars=12000,
+            lang_hint="auto",
+        ) or {}
+
+    # Fallback executive summary if LLM missing
+    if not llm_sections.get("exec_summary"):
+        llm_sections["exec_summary"] = textrank_summary(dedup_text[:120000], n_sentences=8, lang="russian")
 
     # ---- Build Markdown ----
-    lines = []
+    lines: List[str] = []
     lines.append(f"# CIA-Style Intelligence Report — {date_str}\n")
     lines.append(f"**Source Dataset:** {message_count} Telegram messages\n")
     lines.append(f"**Date Range:** {start_date} — {end_date}\n")
 
-    # Executive Summary (LLM preferred)
+    # Executive / LLM analytics
     lines.append("\n## 🧭 Executive Summary\n")
-    if llm_used and llm_sections.get("exec_summary"):
-        lines.append(llm_sections["exec_summary"].strip() + "\n")
-        lines.append(f"_LLM-enhanced (model: {llm_model or 'unknown'})_\n")
-    elif cpu_exec_summary:
-        lines.append(cpu_exec_summary + "\n")
-        lines.append("_CPU TextRank summary_\n")
-    else:
-        lines.append("_Insufficient text for summary._\n")
+    lines.append((llm_sections.get("exec_summary") or "_No summary available._") + "\n")
 
-    # LLM Analytic Sections (if present)
-    if llm_used:
-        def add_block(title, key):
-            val = (llm_sections.get(key) or "").strip()
-            if val:
-                lines.append(f"\n## {title}\n")
-                lines.append(val + "\n")
+    def maybe_section(title_md: str, key: str):
+        val = llm_sections.get(key, "").strip()
+        if val:
+            lines.append(title_md + "\n")
+            lines.append(val + "\n")
 
-        add_block("🧠 Narrative Assessment", "narrative_assessment")
-        add_block("🎯 Adversary Objectives", "adversary_objectives")
-        add_block("🧩 Propaganda / Information Operations", "propaganda_assessment")
-        add_block("⚠️ 7–21 Day Risk Outlook", "risk_outlook")
-        add_block("🔎 Collection Gaps & Next Steps", "collection_gaps")
-        add_block("🧪 Method Notes / Caveats", "method_notes")
+    maybe_section("## 🧵 Narrative Assessment", "narrative_assessment")
+    maybe_section("## 🧠 Propaganda / Influence Ops Assessment", "propaganda_assessment")
+    maybe_section("## ⚠️ Risk Outlook (7–21 days)", "risk_outlook")
+    maybe_section("## 🎯 Likely Adversary Objectives", "adversary_objectives")
+    maybe_section("## 🕳️ Collection Gaps & Next Tasks", "collection_gaps")
+    maybe_section("## 📝 Method Notes", "method_notes")
 
-    # Dominant Terms
-    lines.append("\n## 🔹 Dominant Terms (TF-IDF)\n")
+    # Dominant terms
+    lines.append("## 🔹 Dominant Terms (TF-IDF)\n")
     lines.append("| Term | Weight |\n|---|---|")
     for term, score in tfidf_terms:
         lines.append(f"| {term} | {round(float(score), 2)} |")
 
-    # User keywords (if provided)
+    # User keywords (if any)
     if user_keywords:
         lines.append("\n## 🔑 Tracked Keywords (User-Defined)\n")
         lines.append("| Keyword | Mentions |\n|---|---|")
         for kw, cnt in keyword_counts.items():
             lines.append(f"| {kw} | {cnt} |")
 
-    # Auto “Repetitive & Important” keywords
+    # Auto “repetitive & important” keywords
     lines.append("\n## ♻️ Repetitive High-Signal Keywords (Auto)\n")
     lines.append("| Keyword | Mentions |\n|---|---|")
     for kw, cnt in auto_keywords:
         lines.append(f"| {kw} | {cnt} |")
 
-    # Keyword trend plot (if pipeline created it)
+    # Trend image (from pipeline)
     trend_path = os.path.join(os.path.dirname(out_path), "keyword_mentions.png")
     if os.path.exists(trend_path):
         lines.append("\n## 📊 Keyword Mention Trends\n")
@@ -432,8 +413,9 @@ def write_markdown_report(
     if propaganda_count > 0:
         examples = propaganda_examples.head(10).itertuples(index=False)
         for row in examples:
-            snippet = clean_text(row.text)[:300].replace("\n", " ").strip()
-            lines.append(f"> {snippet} ([source]({row.url}))")
+            snippet = clean_text(getattr(row, "text", ""))[:300].replace("\n", " ").strip()
+            link = getattr(row, "url", "")
+            lines.append(f"> {snippet} ([source]({link}))")
 
     # Observables
     if observables:
@@ -449,7 +431,7 @@ def write_markdown_report(
     for actor, cnt in actor_summary:
         lines.append(f"| {actor} | {cnt} |")
 
-    # Cross-posted items
+    # Cross-posted items (dedup clusters)
     lines.append("\n## 🔎 Source-Corroborated Items (Cross-posted / Duplicates)\n")
     for msg in deduped_msgs[:25]:
         quote = msg["text"][:280].replace("\n", " ").strip()
@@ -458,19 +440,39 @@ def write_markdown_report(
             sources += ", …"
         lines.append(f"- {quote} _(seen in: {sources})_")
 
-    # Word cloud (optional)
-    if cloud_ok and os.path.exists(cloud_path):
-        rel = os.path.basename(cloud_path)
-        lines.append("\n## ☁️ Keyword Cloud\n")
-        lines.append(f"![wordcloud]({rel})\n")
+    lines.append("\n---\n_Generated by LLM-first pipeline (with CPU fallbacks)_\n")
 
-    # Footer
-    if llm_used:
-        lines.append("\n---\n_Generated by Hybrid pipeline (LLM + TextRank/TF-IDF)_.\n")
-    else:
-        lines.append("\n---\n_Generated by CPU-only pipeline (TextRank + TF-IDF)_.\n")
+    md = "\n".join(lines)
+    md = md.encode("utf-8", "ignore").decode("utf-8")
 
-    md = "\n".join(lines).encode("utf-8", "ignore").decode("utf-8")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(md)
     print(f"📝 Markdown report saved to: {out_path}")
+
+# ---- Optional CLI (for ad-hoc runs) ----
+def load_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    expected = {"message_id","group","date","text","url"}
+    missing = expected - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV missing columns: {missing}")
+    return df
+
+def parse_keywords(arg: str):
+    if not arg:
+        return []
+    if os.path.isfile(arg):
+        with open(arg, "r", encoding="utf-8") as f:
+            return [ln.strip() for ln in f if ln.strip()]
+    return [x.strip() for x in arg.split(",") if x.strip()]
+
+if __name__ == "__main__":
+    import argparse
+    p = argparse.ArgumentParser(description="LLM-first Telegram report builder")
+    p.add_argument("--input", "-i", required=True, help="CSV with columns: message_id,group,date,text,url")
+    p.add_argument("--output", "-o", default="analytics/output/summary.md", help="Markdown output path")
+    p.add_argument("--keywords", "-k", default="", help="Comma-separated keywords OR path to a .txt list")
+    args = p.parse_args()
+    df = load_csv(args.input)
+    kws = parse_keywords(args.keywords)
+    write_markdown_report(df, user_keywords=kws, out_path=args.output)

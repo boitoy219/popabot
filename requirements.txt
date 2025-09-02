@@ -1,27 +1,26 @@
-# Core
-pandas>=1.5.3
+# Core analytics
+pandas>=1.5.3,<3.0
 numpy>=1.23.5
 matplotlib>=3.7.0
 
-# NLP and Topic Modeling
-bertopic>=0.15.0
-sentence-transformers>=2.2.2
-scikit-learn>=1.2.2
+# NLP (CPU-only summarization + tokenization)
 nltk>=3.8.1
-transformers>=4.41.1
-torch>=2.2.2
-protobuf>=4.25.3
-tiktoken>=0.6.0
+sumy>=0.11.0
 
-# Telegram scraping
+# ML features (TF-IDF etc.)
+scikit-learn>=1.2.2
+scipy>=1.10.0
+joblib>=1.3.2
+threadpoolctl>=3.1.0
+
+# Optional: near-duplicate detection and word cloud
+rapidfuzz>=3.5.2
+wordcloud>=1.9.3
+pillow>=9.5.0
+
+# Scraper & config
 telethon>=1.28.5
-
-# Env handling
 python-dotenv>=1.0.0
 
-# Optional: accelerate BERTopic embeddings
-joblib>=1.3.2
-
-# PDF, markdown reporting
-markdown2>=2.4.12
-reportlab>=4.0.8
+# Networking (Ollama HTTP calls)
+requests>=2.31.0

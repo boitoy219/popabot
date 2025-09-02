@@ -177,4 +177,10 @@ pyrightconfig.json
 analytics/
 data/
 
+analytics/output/topic_summary.csv
+data/latest_combined.csv
+data/new_messages.csv
+.csv
+
+
 # End of https://www.toptal.com/developers/gitignore/api/python
